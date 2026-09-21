@@ -2163,13 +2163,18 @@ home_summary_refresh_detached() {
 # never calls lavish-axi, and rewrites only that file when the derived payload
 # changed, so Lavish's own file watcher reloads the open page. One tracked
 # child at a time, exactly like the ledger above; its digest file's mtime is
-# the last-attempt stamp the cadence check in the poll loop reads.
+# the last-attempt stamp the cadence check in the poll loop reads. A tick or
+# signal that finds the child still alive spawns nothing and instead touches
+# the pending marker bin/fm-bearings-board.sh owns beside the digest, so the
+# running child folds that change into its single follow-up publish rather
+# than leaving it for the next cadence.
 BOARD_REFRESH_PID=
 BOARD_FILE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-bearings-board.sh" path 2>/dev/null || true)
 board_refresh_detached() {
   [ -n "$BOARD_FILE" ] && [ -f "$BOARD_FILE" ] || return 0
   if [ -n "$BOARD_REFRESH_PID" ]; then
     if kill -0 "$BOARD_REFRESH_PID" 2>/dev/null; then
+      touch "$STATE/.bearings-board-refresh-pending" 2>/dev/null || true
       return 0
     fi
     wait "$BOARD_REFRESH_PID" 2>/dev/null || true

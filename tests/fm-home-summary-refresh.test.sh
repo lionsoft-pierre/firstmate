@@ -385,6 +385,132 @@ WATCH_PID=
 unset LAVISH_CALL_LOG
 pass "live watcher cadence re-derives the fleet board on backlog-only change without Lavish"
 
+# A status signal that lands while the watcher's refresh child is still
+# deriving must not wait for the next cadence: the watcher spawns no second
+# child and touches the pending marker instead, and the running child folds
+# the change into its single follow-up publish before it exits.
+PENDING_HOME="$TMP_ROOT/pending-home"
+mkdir -p "$PENDING_HOME/state" "$PENDING_HOME/data" "$PENDING_HOME/config" "$PENDING_HOME/projects/task"
+printf '# Seeded Firstmate home\n' > "$PENDING_HOME/AGENTS.md"
+git -C "$PENDING_HOME/projects/task" init -q
+git -C "$PENDING_HOME/projects/task" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m seed
+git -C "$PENDING_HOME/projects/task" checkout -q -b fm/pending-task
+cat > "$PENDING_HOME/data/backlog.md" <<'EOF2'
+## In flight
+- [ ] pending-task - Signal the board (repo: firstmate) (kind: ship) (since 2026-08-28)
+
+## Queued
+- [ ] pending-seed - Seeded queued work (repo: firstmate) (kind: ship) (since 2026-08-01)
+
+## Done
+EOF2
+fm_write_meta "$PENDING_HOME/state/pending-task.meta" \
+  "window=fmtest:fm-pending-task" \
+  "worktree=$PENDING_HOME/projects/task" \
+  "project=firstmate" \
+  "harness=claude" \
+  "kind=ship" \
+  "mode=no-mistakes"
+# The crew is provably working, so each working: note below is a benign signal
+# the watcher absorbs while staying alive; an actionable one would hand off and
+# exit by design, which is not the path under test.
+pending_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$PENDING_HOME/state" pending-task)
+"$ROOT/bin/fm-busy-event.sh" apply "$PENDING_HOME/state" pending-task busy \
+  --gen "$pending_gen" --source claude-hook --event user-prompt-submit >/dev/null
+export LAVISH_CALL_LOG="$TMP_ROOT/pending-lavish-calls"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$PENDING_HOME" \
+  "$ROOT/bin/fm-bearings-snapshot.sh" --board > "$PENDING_HOME/payload.json" \
+  || fail "could not derive the pending-home seed board payload"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$PENDING_HOME" \
+  "$ROOT/bin/fm-bearings-board.sh" publish "$PENDING_HOME/payload.json" >/dev/null \
+  || fail "could not seed the pending-home fleet board"
+pending_charted_ids() {
+  sed -n '/<script id="bearings-data" type="application\/json">/,/<\/script>/p' "$PENDING_HOME/.lavish/bearings-board.html" \
+    | sed '1d;$d' | jq -r '[.charted[].id] | join(",")'
+}
+[ "$(pending_charted_ids)" = pending-seed ] || fail "the pending-home seed board does not carry the seeded row"
+# The first generation blocks on a trigger file; every later one is the real
+# generator, so the follow-up publish carries whatever the backlog holds then.
+cat > "$FAKEBIN/blocking-generator" <<SH
+#!/usr/bin/env bash
+n=\$(cat "$PENDING_HOME/gen-count" 2>/dev/null || printf 0)
+n=\$((n + 1))
+printf '%s\\n' "\$n" > "$PENDING_HOME/gen-count"
+: > "$PENDING_HOME/gen-started-\$n"
+if [ "\$n" = 1 ]; then
+  while [ ! -e "$PENDING_HOME/gen-release" ]; do
+    [ "\$SECONDS" -lt 60 ] || exit 75
+    sleep 0.05
+  done
+fi
+exec "$ROOT/bin/fm-bearings-snapshot.sh" "\$@"
+SH
+chmod +x "$FAKEBIN/blocking-generator"
+PATH="$FAKEBIN:$PATH" \
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$PENDING_HOME" \
+  FM_BEARINGS_BOARD_GENERATOR="$FAKEBIN/blocking-generator" \
+  FM_POLL=1 FM_BOARD_REFRESH_INTERVAL=9999999 FM_HOME_SUMMARY_INTERVAL=9999999 FM_SIGNAL_GRACE=0 \
+  FM_CHECK_INTERVAL=9999999 FM_HEARTBEAT=9999999 \
+  "$WATCH" > "$TMP_ROOT/pending-watch.out" 2> "$TMP_ROOT/pending-watch.err" &
+WATCH_PID=$!
+i=0
+while [ ! -e "$PENDING_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 100 ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null || break
+  sleep 0.05
+  i=$((i + 1))
+done
+[ -e "$PENDING_HOME/state/.last-watcher-beat" ] \
+  || fail "the pending-home watcher did not complete its initial cycle: $(cat "$TMP_ROOT/pending-watch.err")"
+printf 'working: first signal starts the refresh child\n' >> "$PENDING_HOME/state/pending-task.status"
+i=0
+while [ ! -e "$PENDING_HOME/gen-started-1" ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null || fail "the pending-home watcher exited before its refresh child started: $(cat "$TMP_ROOT/pending-watch.err")"
+  [ "$i" -lt 200 ] || fail "a status signal did not start the watcher's refresh child"
+  sleep 0.05
+  i=$((i + 1))
+done
+python3 - "$PENDING_HOME/data/backlog.md" <<'PY2'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+path.write_text(text.replace("\n## Done", "- [ ] pending-change - Filed while the refresh child was deriving (repo: firstmate) (kind: ship) (since 2026-08-02)\n\n## Done", 1))
+PY2
+printf 'working: second signal lands while the child is still deriving\n' >> "$PENDING_HOME/state/pending-task.status"
+i=0
+while [ ! -e "$PENDING_HOME/state/.bearings-board-refresh-pending" ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null || fail "the pending-home watcher exited before marking the pending refresh: $(cat "$TMP_ROOT/pending-watch.err") --- stdout: $(tail -n 20 "$TMP_ROOT/pending-watch.out")"
+  [ "$i" -lt 200 ] || fail "a signal during a live refresh child did not leave the pending marker"
+  sleep 0.05
+  i=$((i + 1))
+done
+[ ! -e "$PENDING_HOME/gen-started-2" ] || fail "the watcher spawned a second refresh child while the first was alive"
+[ "$(pending_charted_ids)" = pending-seed ] || fail "the board changed before the blocked child published: $(pending_charted_ids)"
+: > "$PENDING_HOME/gen-release"
+i=0
+while [ "$(pending_charted_ids)" != "pending-change,pending-seed" ]; do
+  [ "$i" -lt 300 ] || fail "the change signalled during a live refresh child did not reach the board through the follow-up: $(pending_charted_ids)"
+  sleep 0.1
+  i=$((i + 1))
+done
+kill "$WATCH_PID" >/dev/null 2>&1 || true
+wait "$WATCH_PID" >/dev/null 2>&1 || true
+WATCH_PID=
+i=0
+while [ -e "$PENDING_HOME/state/.bearings-board-refresh.lock" ] && [ "$i" -lt 100 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+[ ! -e "$PENDING_HOME/state/.bearings-board-refresh.lock" ] || fail "the refresh child did not release the lock after its follow-up"
+[ ! -e "$PENDING_HOME/state/.bearings-board-refresh-pending" ] || fail "the pending marker survived the follow-up publish"
+[ "$(cat "$PENDING_HOME/gen-count")" = 2 ] \
+  || fail "the refresh child did not run exactly one follow-up: $(cat "$PENDING_HOME/gen-count") generations"
+[ ! -s "$LAVISH_CALL_LOG" ] || fail "the pending-home refresh called lavish-axi: $(cat "$LAVISH_CALL_LOG")"
+[ ! -e "$PENDING_HOME/state/.bearings-board-refresh.log" ] \
+  || fail "the pending-home refresh logged a failure: $(cat "$PENDING_HOME/state/.bearings-board-refresh.log")"
+unset LAVISH_CALL_LOG
+pass "a signal during a live refresh child leaves the pending marker and reaches the board through one follow-up"
+
 # Consumer boundary: first serialize behind any watcher-started publication,
 # then replace the ledger with a structurally complete but semantically false
 # state. The default parent snapshot must consume that publication rather than
