@@ -44,16 +44,10 @@
 #            accepted for tests and diagnostics. Output starts with `board:`.
 #            It records the digest and the check stamp of the payload it
 #            published, so the watcher's next tick republishes nothing
-#            identical and the page the captain just opened is not reloaded,
-#            and it generates, publishes, and records under the same
-#            single-flight refresh lock, waiting for an in-flight refresh
-#            (bounded by FM_BOARD_REFRESH_TIMEOUT) instead of yielding, so a
-#            refresh can neither republish identical content over the fresh
-#            build nor be overwritten by a payload build derived before it
-#            ran. A refresh that yields while build holds the lock leaves the
-#            pending marker, and build honors it exactly as refresh does: one
-#            follow-up generate-and-publish before the lock is released, never
-#            a loop, so the change that arrived mid-build reaches the board.
+#            identical and the page the captain just opened is not reloaded.
+#            It generates, publishes, and records under the refresh lock and
+#            honors the pending marker exactly as refresh does; REFRESH
+#            COORDINATION below owns that rule.
 # refresh    Re-derive the payload and republish the board ONLY when the derived
 #            payload changed (its `generated` stamp excluded), so an open page
 #            reloads on real fleet change and never on the clock. Prints
@@ -62,15 +56,9 @@
 #            captain's opt-in; never calls lavish-axi, never binds or arms, and
 #            never reopens a session the captain ended - `/bearings lavish`
 #            (build) is the deliberate reopen. A concurrent refresh yields
-#            (`busy:`) rather than racing, but first touches the pending
-#            marker state/.bearings-board-refresh-pending beside the digest;
-#            the lock holder checks that marker after its own publish, on the
-#            refreshed and the unchanged paths alike, and when present clears
-#            it and runs exactly one more generate-and-publish before
-#            releasing the lock, so a change that arrives mid-refresh reaches
-#            the board without waiting for the next cadence. Never a loop: a
-#            marker touched during that follow-up run waits for the next
-#            refresh. With --best-effort every failure,
+#            (`busy:`) rather than racing, after queueing its follow-up
+#            through the pending marker; REFRESH COORDINATION below owns that
+#            rule. With --best-effort every failure,
 #            including the missing board, is recorded in the bounded
 #            state/.bearings-board-refresh.log and the exit status is 0, so no
 #            call site can change its own result by calling it. With --detach
@@ -114,6 +102,22 @@
 # refresh skips the per-card open probe: its payload was derived a moment
 # earlier from the very backlog that probe reads, and the probe costs one
 # tasks-axi read per card on every cadence tick.
+#
+# REFRESH COORDINATION. This is the whole rule, written once; bin/fm-watch.sh
+# and docs/configuration.md "Live fleet board" defer to it. One single-flight
+# lock, state/.bearings-board-refresh.lock, covers generation and publish for
+# both refresh and build: build waits for it (bounded by
+# FM_BOARD_REFRESH_TIMEOUT) while refresh yields with `busy:`. A refresh that
+# yields, or a watcher status signal that finds the watcher's refresh child
+# still alive, queues exactly one follow-up generate-and-publish by touching
+# the pending marker state/.bearings-board-refresh-pending beside the digest;
+# the lock holder, refresh or build alike, checks that marker after its own
+# publish on the refreshed and the unchanged paths, clears it, and runs one
+# more generate-and-publish before releasing the lock, so a change that
+# arrives mid-run reaches the board without waiting for the next cadence.
+# Never a loop: a marker touched during that follow-up waits for the next
+# run. The watcher's cadence never queues, because a running child already
+# satisfies it, and the watcher never runs two children at once.
 #
 # THE RECONCILE CHOICE. Every decision card carries the standard `reconcile`
 # option, injected here so the guarantee does not depend on the generator, and

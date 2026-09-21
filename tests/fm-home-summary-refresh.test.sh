@@ -511,6 +511,83 @@ done
 unset LAVISH_CALL_LOG
 pass "a signal during a live refresh child leaves the pending marker and reaches the board through one follow-up"
 
+# A cadence tick is not a change: while the refresh child it spawned is still
+# deriving, further ticks spawn nothing and leave the pending marker absent,
+# so a slow generation never buys itself a redundant follow-up.
+CADENCE_ALIVE_HOME="$TMP_ROOT/cadence-alive-home"
+mkdir -p "$CADENCE_ALIVE_HOME/state" "$CADENCE_ALIVE_HOME/data" "$CADENCE_ALIVE_HOME/config" "$CADENCE_ALIVE_HOME/projects"
+printf '# Seeded Firstmate home\n' > "$CADENCE_ALIVE_HOME/AGENTS.md"
+cat > "$CADENCE_ALIVE_HOME/data/backlog.md" <<'EOF2'
+## In flight
+
+## Queued
+- [ ] cadence-seed - Seeded queued work (repo: firstmate) (kind: ship) (since 2026-08-01)
+
+## Done
+EOF2
+export LAVISH_CALL_LOG="$TMP_ROOT/cadence-alive-lavish-calls"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CADENCE_ALIVE_HOME" \
+  "$ROOT/bin/fm-bearings-snapshot.sh" --board > "$CADENCE_ALIVE_HOME/payload.json" \
+  || fail "could not derive the cadence-alive seed board payload"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CADENCE_ALIVE_HOME" \
+  "$ROOT/bin/fm-bearings-board.sh" publish "$CADENCE_ALIVE_HOME/payload.json" >/dev/null \
+  || fail "could not seed the cadence-alive fleet board"
+cat > "$FAKEBIN/cadence-blocking-generator" <<SH
+#!/usr/bin/env bash
+n=\$(cat "$CADENCE_ALIVE_HOME/gen-count" 2>/dev/null || printf 0)
+n=\$((n + 1))
+printf '%s\\n' "\$n" > "$CADENCE_ALIVE_HOME/gen-count"
+: > "$CADENCE_ALIVE_HOME/gen-started-\$n"
+if [ "\$n" = 1 ]; then
+  while [ ! -e "$CADENCE_ALIVE_HOME/gen-release" ]; do
+    [ "\$SECONDS" -lt 60 ] || exit 75
+    sleep 0.05
+  done
+fi
+exec "$ROOT/bin/fm-bearings-snapshot.sh" "\$@"
+SH
+chmod +x "$FAKEBIN/cadence-blocking-generator"
+PATH="$FAKEBIN:$PATH" \
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CADENCE_ALIVE_HOME" \
+  FM_BEARINGS_BOARD_GENERATOR="$FAKEBIN/cadence-blocking-generator" \
+  FM_POLL=1 FM_BOARD_REFRESH_INTERVAL=1 FM_HOME_SUMMARY_INTERVAL=9999999 FM_SIGNAL_GRACE=0 \
+  FM_CHECK_INTERVAL=9999999 FM_HEARTBEAT=9999999 \
+  "$WATCH" > "$TMP_ROOT/cadence-alive-watch.out" 2> "$TMP_ROOT/cadence-alive-watch.err" &
+WATCH_PID=$!
+i=0
+while [ ! -e "$CADENCE_ALIVE_HOME/gen-started-1" ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null || fail "the cadence-alive watcher exited before its refresh child started: $(cat "$TMP_ROOT/cadence-alive-watch.err")"
+  [ "$i" -lt 200 ] || fail "the cadence tick did not start the watcher's refresh child"
+  sleep 0.05
+  i=$((i + 1))
+done
+beat_before=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime)' "$CADENCE_ALIVE_HOME/state/.last-watcher-beat")
+i=0
+while [ "$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime)' "$CADENCE_ALIVE_HOME/state/.last-watcher-beat")" = "$beat_before" ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null || fail "the cadence-alive watcher exited while its refresh child was deriving: $(cat "$TMP_ROOT/cadence-alive-watch.err")"
+  [ "$i" -lt 100 ] || fail "no further cadence poll passed while the refresh child was deriving"
+  sleep 0.1
+  i=$((i + 1))
+done
+[ ! -e "$CADENCE_ALIVE_HOME/state/.bearings-board-refresh-pending" ] \
+  || fail "a cadence tick during a live refresh child left the pending marker"
+[ ! -e "$CADENCE_ALIVE_HOME/gen-started-2" ] || fail "a cadence tick spawned a second refresh child while the first was alive"
+: > "$CADENCE_ALIVE_HOME/gen-release"
+i=0
+while [ ! -s "$CADENCE_ALIVE_HOME/state/.bearings-board-digest" ]; do
+  [ "$i" -lt 300 ] || fail "the released refresh child never published"
+  sleep 0.1
+  i=$((i + 1))
+done
+kill "$WATCH_PID" >/dev/null 2>&1 || true
+wait "$WATCH_PID" >/dev/null 2>&1 || true
+WATCH_PID=
+[ ! -e "$CADENCE_ALIVE_HOME/state/.bearings-board-refresh-pending" ] \
+  || fail "the pending marker appeared without any status signal"
+[ ! -s "$LAVISH_CALL_LOG" ] || fail "the cadence-alive refresh called lavish-axi: $(cat "$LAVISH_CALL_LOG")"
+unset LAVISH_CALL_LOG
+pass "a cadence tick during a live refresh child spawns nothing and leaves the pending marker absent"
+
 # Consumer boundary: first serialize behind any watcher-started publication,
 # then replace the ledger with a structurally complete but semantically false
 # state. The default parent snapshot must consume that publication rather than

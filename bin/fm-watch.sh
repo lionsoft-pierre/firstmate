@@ -2163,18 +2163,19 @@ home_summary_refresh_detached() {
 # never calls lavish-axi, and rewrites only that file when the derived payload
 # changed, so Lavish's own file watcher reloads the open page. One tracked
 # child at a time, exactly like the ledger above; its digest file's mtime is
-# the last-attempt stamp the cadence check in the poll loop reads. A tick or
-# signal that finds the child still alive spawns nothing and instead touches
-# the pending marker bin/fm-bearings-board.sh owns beside the digest, so the
-# running child folds that change into its single follow-up publish rather
-# than leaving it for the next cadence.
+# the last-attempt stamp the cadence check in the poll loop reads. While that
+# child is alive nothing is spawned: the signal path queues one follow-up by
+# touching the pending marker and the cadence path returns silently, per the
+# REFRESH COORDINATION paragraph in bin/fm-bearings-board.sh's header, which
+# owns the rule.
 BOARD_REFRESH_PID=
 BOARD_FILE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-bearings-board.sh" path 2>/dev/null || true)
-board_refresh_detached() {
+board_refresh_detached() {  # [signal]
+  local queue=${1:-}
   [ -n "$BOARD_FILE" ] && [ -f "$BOARD_FILE" ] || return 0
   if [ -n "$BOARD_REFRESH_PID" ]; then
     if kill -0 "$BOARD_REFRESH_PID" 2>/dev/null; then
-      touch "$STATE/.bearings-board-refresh-pending" 2>/dev/null || true
+      [ "$queue" != signal ] || touch "$STATE/.bearings-board-refresh-pending" 2>/dev/null || true
       return 0
     fi
     wait "$BOARD_REFRESH_PID" 2>/dev/null || true
@@ -2533,7 +2534,7 @@ EOF
     # home_summary_refresh_detached for why publication stays off the beacon's
     # path. Publication failure stays side-band.
     home_summary_refresh_detached
-    board_refresh_detached
+    board_refresh_detached signal
     files=""
     while IFS=$(printf '\t') read -r sf sig f; do
       [ -n "$sf" ] || continue
