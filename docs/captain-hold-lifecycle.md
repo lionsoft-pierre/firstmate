@@ -98,11 +98,12 @@ No path here closes a captain call without either the captain's words through `a
 
 ## Card hygiene: a landed subject is not a live call
 
-`bin/fm-bearings-board.sh build` cross-checks every `decision` card before it publishes and drops stale subjects rather than trusting the composed inventory alone.
+Every `bin/fm-bearings-board.sh` publish, from `build` and from the automatic `refresh` alike, cross-checks every `decision` card and drops stale subjects rather than trusting the generated payload alone.
 
 Three checks run, all on exact identity and none on prose:
 
 - The card's key is the captain-held task id, so `bin/fm-captain-hold.sh open --distinguish-absent` is asked whether that task is still an open captain call.
+  `build` runs that probe, while `refresh` skips it because its payload was derived from that same backlog a moment earlier; the script header owns that rule.
   Exit 1 - present but closed, or no longer held for the captain - drops the card.
   Exit 2 means the answer could not be established and exit 3 means the task is absent from the main backlog, which includes a home carrying no backlog file at all; both keep the card, because a card wrongly shown is recoverable and a call wrongly hidden is not.
 - The payload's own `landed` rows are the recently-landed artifacts.
@@ -111,7 +112,7 @@ Three checks run, all on exact identity and none on prose:
   A landed row carrying the same artifact at that version or a newer one supersedes the card without parsing prose.
 
 Dropped cards are named on stderr as `dropped-landed-card:` lines so a rebuild states what it removed rather than quietly shrinking Captain's Call.
-The landing procedure requires one immediate board rebuild to remove already-stale merged-PR and superseded-version cards without a committed migration or change-worktree state mutation.
+A landing needs no board rebuild: the next automatic refresh re-derives the payload and publishes it without the merged-PR and superseded-version cards, with no committed migration or change-worktree state mutation.
 A subject whose state cannot be established is kept, because a wrongly shown card is safer than a wrongly hidden call.
 The validator's reservation scope must equal the adapter's reconcile-classification scope, which is all card types because the captured payload carries no card type.
 Owner-aware routing for remote-secondmate decision cards is tracked separately: that follow-up must query landedness and route reconciliation in the authoritative secondmate home while honoring the remote and local consistency principle.
@@ -207,7 +208,7 @@ One case in that family needs no beads install and always runs: a stubbed tasks-
 The reconcile path is pinned in the same suite: a reconcile answer arriving through the keyed-answer intake, in the default close mode and in the `release` mode a captain-gated work card declares, is refused and leaves both tasks held with no resolution record or request; only the separately bound captured-source intake records one durable request per task idempotently across a replay.
 It also proves the two verification outcomes - an evidence-backed `reconciled` close that records the evidence under its own label and never as the captain's words, and a note that leaves the call queued, held, and dated - while both outcomes refuse without a pending board request, each durable mutation applies only once across close, probe, and request-retirement failures, a later distinct request with the same note still appends its own dated record, every failed retirement is surfaced with its pending request retained, incompatible resolution modes cannot replay as captain answers, and normal close, release, and replay paths retire pending requests.
 The captured-source coverage proves Lavish deduplicates each card before separating versioned structured selections from notes, bare and annotated Reconcile choices never reach keyed answers, genuine current and legacy choices still close normally, legacy bare and separator-annotated reconcile values feed neither intake, mixed repeated selections preserve every other card's final value, the generic runner creates a request only through a verified bound source, chat reconcile text creates none, and the resulting board request authorizes evidence-backed closure.
-The board's half is pinned in `tests/fm-bearings-board.test.sh`: every published decision card carries exactly one reconcile option, authored options reserve that value across every card type, recommendations name authored options, a decision card whose structured subject appears in the payload's landed rows is dropped while a genuinely open one is kept even when an unrelated landed id contains its key after a newline, a build requires a fresh authoritative listed-open result before binding or arming, a reopen retires the pre-reopen source generation and waits for a fresh live listener, and a rebuild of an already-armed board with no live listener starts one.
+The board's half is pinned in `tests/fm-bearings-board.test.sh`: every published decision card carries exactly one reconcile option, payload options reserve that value across every card type (`tests/fm-captain-hold-lifecycle.test.sh` pins the hold-side rule that `--option` never occupies it and `--recommend` names one of the given options), a decision card whose structured subject appears in the payload's landed rows is dropped while a genuinely open one is kept even when an unrelated landed id contains its key after a newline, a build requires a fresh authoritative listed-open result before binding or arming, a reopen retires the pre-reopen source generation and waits for a fresh live listener, and a rebuild of an already-armed board with no live listener starts one.
 That suite drives its Lavish session through a protocol-shaped stub, and `tests/fm-bearings-board-lavish-live-e2e.test.sh` is the default-on capability guard for the installed provider; [`verification/process-event-sources.md`](verification/process-event-sources.md) owns the version-scoped evidence.
 [`verification/process-event-sources.md`](verification/process-event-sources.md) owns the process-event ownership and reclamation evidence exercised by `tests/fm-procevent.test.sh`.
 

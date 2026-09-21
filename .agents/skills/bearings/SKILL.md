@@ -100,7 +100,7 @@ Never compose, edit, or hand-inject a payload, never bind or arm the board befor
 The build is the only path that reopens a session the captain ended; the automatic refresh never does, so a board the captain closed stays closed until `/bearings lavish` is invoked again.
 
 The keys the board sends are fixed by the generator: a Captain's Call decision key is the captain-held task id (a secondmate hold is keyed `<mate>.<task-id>` and stays announced for hand routing), a merge card's key is `merge.<task-id>`, and the Charted Next dispatch picker's key is `dispatch.charted`.
-What the captain can pick on a decision card comes from the hold itself: file every captain hold through `bin/fm-captain-hold.sh hold` with one `--option <value>=<label>` per answer the captain can give and `--recommend <value>` for your recommendation, so the card offers those exact choices; a hold filed without options renders the reason with a freeform answer box only.
+What the captain can pick on a decision card comes from the hold itself, the `--option` and `--recommend` values the captain-hold-lifecycle skill has you file with every hold; a hold filed without options renders the reason with a freeform answer box only.
 Every decision card also carries the standard `reconcile` choice, which the generator never authors and the publish step always injects.
 
 ### Handling a board wake
