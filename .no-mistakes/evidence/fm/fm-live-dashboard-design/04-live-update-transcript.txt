@@ -1,0 +1,21 @@
+== 18:07:25Z captain answers the billing cutover hold through the CLI (no board command invoked)
+released: rel-cutover
+== 18:07:26Z a worker files a new captain hold on queued work (no board command invoked)
+ship-dark-mode
+== 18:07:28Z waiting for the detached refresh
+== 18:07:30Z board file changed: yes
+== refresh records in state/:
+-rw-------@  1 pierre  wheel   65 Sep 21 14:07 .bearings-board-digest
+== refresh failure log:
+(none)
+== Lavish server-sent events observed on the open session:
+event: chat-sync
+data: {"chat":[]}
+event: agent-presence
+data: {"state":"listening"}
+event: reload
+data: {}
+event: reload
+data: {}
+== Captain's Call keys now in the published board payload:
+[{"key":"ship-dark-mode","type":"decision","title":"Dark mode for the settings page","options":["approve","revise"]},{"key":"name-call","type":"decision","title":"Approve the public name for the new CLI","options":[]},{"key":"merge.ship-search-index","type":"merge","title":"Rebuild the search index nightly","options":["merge","hold"]}]

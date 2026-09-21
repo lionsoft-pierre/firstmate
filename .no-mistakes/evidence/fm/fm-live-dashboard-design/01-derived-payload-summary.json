@@ -1,0 +1,56 @@
+{
+  "schema": "fm-bearings-board.v1",
+  "home": "fm-live-board-lab/home",
+  "generated": "2026-09-21T18:05:03Z",
+  "captains_call": [
+    {
+      "key": "rel-cutover",
+      "type": "decision",
+      "title": "Cut over billing to the new provider",
+      "options": [
+        "now",
+        "friday"
+      ],
+      "recommend_value": "friday",
+      "close": "release"
+    },
+    {
+      "key": "name-call",
+      "type": "decision",
+      "title": "Approve the public name for the new CLI",
+      "options": [],
+      "recommend_value": null,
+      "close": null
+    },
+    {
+      "key": "merge.ship-search-index",
+      "type": "merge",
+      "title": "Rebuild the search index nightly",
+      "options": [
+        "merge",
+        "hold"
+      ],
+      "recommend_value": null,
+      "close": null
+    }
+  ],
+  "underway": [
+    "Investigate flaky CI on main",
+    "Refresh token rotation for the API",
+    "Rebuild the search index nightly"
+  ],
+  "landed": [
+    null,
+    null
+  ],
+  "charted": [
+    {
+      "title": "Dark mode for the settings page",
+      "kind": "queued"
+    },
+    {
+      "title": "Rate limit the public endpoints",
+      "kind": "queued"
+    }
+  ]
+}

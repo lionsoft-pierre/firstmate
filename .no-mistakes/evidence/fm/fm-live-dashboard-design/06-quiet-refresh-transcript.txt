@@ -1,0 +1,9 @@
+== quiet fleet: an explicit refresh with no fleet change
+check stamp served by Lavish before: window.__fmBoardChecked && window.__fmBoardChecked({checked: 1790014049});
+unchanged: 32686cc215d73368e2341544025570604870aad4df9374e402093efada0e8c8f
+check stamp served by Lavish after:  window.__fmBoardChecked && window.__fmBoardChecked({checked: 1790014072});
+== refresh in a home that never opened the board (must refuse, exit 3)
+fm-bearings-board: no board is published for this home; run build first
+exit=3
+== refresh is model-free: the payload generator is the snapshot script
+no refresh failures logged
