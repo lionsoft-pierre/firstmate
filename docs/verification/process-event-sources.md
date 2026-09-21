@@ -9,6 +9,7 @@ Verified on 2026-07-31 on macOS (Darwin 25.5.0) with `lavish-axi` 0.1.45 install
 Generic keyed-answer feed verified on 2026-08-16 on the same platform, against the same published poll response shape.
 Cross-origin keyed-answer feed verified on 2026-08-19 through the real runner and Lavish adapter interface.
 Trusted external `process-event-adapter/1` binding conformance and the runnable `file-signal` example were verified on 2026-08-27 on macOS (Darwin 25.5.0) with Node v25.9.0.
+The vendor behaviors the live Bearings board depends on were verified on 2026-09-21 on macOS (Darwin 27.0.0) with `lavish-axi` 0.1.54 installed.
 
 ## The published Lavish poll interface the adapter wraps
 
@@ -54,6 +55,30 @@ The sentence between those two, in the same help text, is "Its final feedback is
 So the last useful response of an ended review is a `feedback` response, and every poll after it returns an empty ended session immediately.
 That is why the adapter's terminal verdict covers a `feedback` response carrying `session_ended`, not only `status: ended` and a missing session: without it, one human `Send & End` leaves the source armed and each later cycle captures another empty ended result.
 `session_ended` is a session-level field emitted beside `status` in the response's leading `session:` block, which is why the adapter reads it there and ignores identical text appearing in prompt payloads.
+
+## What the live Bearings board depends on from the installed build
+
+Verified on 2026-09-21 on macOS (Darwin 27.0.0) with `lavish-axi` 0.1.54 installed.
+[`bin/fm-bearings-board.sh`](../../bin/fm-bearings-board.sh) owns the build, publish, and refresh mechanics; this section records only the vendor-controlled behaviors that logic is written against and the exact evidence that the installed build still exhibits them.
+
+```sh
+$ lavish-axi --version
+0.1.54
+$ FM_BEARINGS_LAVISH_LIVE=1 bin/fm-test-run.sh tests/fm-bearings-board-lavish-live-e2e.test.sh
+# lavish-axi 0.1.54
+ok - lavish-axi 0.1.54 reports a captain-ended session without reopening it and without failing
+ok - the board build reopens a captain-ended session against real lavish-axi instead of arming a dead one
+ok - lavish-axi 0.1.54 serves the check stamp fresh on every read without reloading the page
+ok - lavish-axi 0.1.54 reloads the open board after an atomic rewrite
+```
+
+Opening a session the captain ended from the browser exits 0 while refusing to reopen it, so the build reads the session listing rather than the exit status before arming a poll.
+The artifact route serves the `bearings-board-checked.js` sibling fresh on every read and pushes no `reload` event when only that sibling changes, so an unchanged-fleet `refresh` advances the check stamp the page polls through its script tag without disturbing the open page.
+An atomic rewrite of the board file makes the server push a `reload` event to the open page, so `publish` and a changed-fleet `refresh` need no client-side call to update what the captain sees.
+
+[`tests/fm-bearings-board-lavish-live-e2e.test.sh`](../../tests/fm-bearings-board-lavish-live-e2e.test.sh) is the command that refreshes this section: rerun it after every `lavish-axi` upgrade and replace the date, version, and output above.
+It opens one scratch session in a temporary lab and ends it before returning, so it touches no other Lavish session.
+Standard CI has no `lavish-axi`, so the guard reports a capability skip there and [`tests/fm-bearings-board.test.sh`](../../tests/fm-bearings-board.test.sh) pins the build's logic against a stub that reproduces these shapes.
 
 ## Why an empty ordinary board close or disconnected browser is silent
 
@@ -163,7 +188,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | owner-matched replacement safety | two registrations for the same external source receive distinct owner tokens; unconditional external retirement and the first token cannot retire the replacement, the replacement token can, bounded home sweep derives and uses that exact token, and legacy built-in registrations retain unconditional behavior plus exact `--if-matches` retirement |
 | independent homes | two homes bind the same package id/version to different content-addressed absolute paths and independently capture results and extension state, with no cross-home fallback or result path |
 
-Run the focused external-binding evidence and the live Bearings session guard with:
+Run the focused external-binding evidence and the live Bearings board guard, which refreshes the live-board section above, with:
 
 ```sh
 node --version
