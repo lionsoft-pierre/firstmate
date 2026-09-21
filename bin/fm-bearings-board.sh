@@ -45,10 +45,15 @@
 #            It records the digest and the check stamp of the payload it
 #            published, so the watcher's next tick republishes nothing
 #            identical and the page the captain just opened is not reloaded,
-#            and it publishes and records under the same single-flight refresh
-#            lock, waiting for an in-flight refresh (bounded by
-#            FM_BOARD_REFRESH_TIMEOUT) instead of yielding, so that refresh
-#            can never republish identical content over the fresh build.
+#            and it generates, publishes, and records under the same
+#            single-flight refresh lock, waiting for an in-flight refresh
+#            (bounded by FM_BOARD_REFRESH_TIMEOUT) instead of yielding, so a
+#            refresh can neither republish identical content over the fresh
+#            build nor be overwritten by a payload build derived before it
+#            ran. A refresh that yields while build holds the lock leaves the
+#            pending marker, and build honors it exactly as refresh does: one
+#            follow-up generate-and-publish before the lock is released, never
+#            a loop, so the change that arrived mid-build reaches the board.
 # refresh    Re-derive the payload and republish the board ONLY when the derived
 #            payload changed (its `generated` stamp excluded), so an open page
 #            reloads on real fleet change and never on the clock. Prints
@@ -472,6 +477,7 @@ serve_board() {
 GENERATED_PAYLOAD=
 build_cleanup() {
   [ -z "$GENERATED_PAYLOAD" ] || rm -f -- "$GENERATED_PAYLOAD"
+  [ -z "$REFRESH_TMP" ] || rm -f -- "$REFRESH_TMP" "$REFRESH_TMP.err" 2>/dev/null || true
   if [ "$REFRESH_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$REFRESH_LOCK" || true
     REFRESH_LOCK_HELD=0
@@ -479,15 +485,10 @@ build_cleanup() {
 }
 
 command_build() {
-  local data=${1-} digest rc=0
+  local data=${1-} digest rc=0 board
   [ "$#" -le 1 ] || { usage >&2; exit 2; }
   trap build_cleanup EXIT
-  if [ -z "$data" ]; then
-    GENERATED_PAYLOAD=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-bearings-board-gen.XXXXXX") \
-      || fail "cannot stage the generated board payload"
-    generate_payload "$GENERATED_PAYLOAD" || fail "cannot generate the board payload"
-    data=$GENERATED_PAYLOAD
-  fi
+  board=$(board_path)
   mkdir -p "$STATE" 2>/dev/null || fail "state directory is unavailable: $STATE"
   fm_lock_acquire_wait_bounded "$REFRESH_LOCK" "$REFRESH_TIMEOUT" || rc=$?
   case "$rc" in
@@ -496,10 +497,27 @@ command_build() {
     *) fail "cannot acquire the board refresh lock $REFRESH_LOCK" ;;
   esac
   REFRESH_LOCK_HELD=1
+  if [ -z "$data" ]; then
+    GENERATED_PAYLOAD=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-bearings-board-gen.XXXXXX") \
+      || fail "cannot stage the generated board payload"
+    generate_payload "$GENERATED_PAYLOAD" || fail "cannot generate the board payload"
+    data=$GENERATED_PAYLOAD
+  fi
   publish_board "$data"
   digest=$(payload_digest "$data") || fail "cannot digest the published board payload"
   record_digest "$digest" || fail "cannot record the board digest"
   write_checked_stamp || fail "cannot record the board check stamp"
+  if [ -e "$REFRESH_PENDING" ]; then
+    rm -f -- "$REFRESH_PENDING"
+    REFRESH_TMP=$(umask 077; mktemp "$STATE/.bearings-board-payload.XXXXXX") \
+      || fail "cannot stage the follow-up board payload"
+    (
+      trap - EXIT
+      BEST_EFFORT=1
+      REFRESH_ATTEMPT=1
+      refresh_once "$board"
+    ) || true
+  fi
   fm_lock_release "$REFRESH_LOCK" || fail "cannot release the board refresh lock"
   REFRESH_LOCK_HELD=0
   serve_board

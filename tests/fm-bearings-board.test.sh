@@ -1120,6 +1120,67 @@ SH
   pass "build waits for an in-flight refresh, then publishes and records the digest of its own payload"
 }
 
+# Build derives its payload under the lock, so a refresh that arrives while the
+# build is deriving yields, leaves the pending marker, and the build honors it
+# with exactly one follow-up publish carrying the newer state before serving.
+test_build_honors_a_refresh_that_yielded_while_it_generated() {
+  local home out i build_pid
+  home=$(make_home build-pending)
+  seed_backlog "$home"
+  write_valid_payload "$home/payload.json"
+  run_board "$home" publish "$home/payload.json" >/dev/null || fail "the seed publish failed"
+  cat > "$home/fakebin/generator" <<SH
+#!/usr/bin/env bash
+n=\$(cat "$home/gen-count" 2>/dev/null || printf 0)
+n=\$((n + 1))
+printf '%s\\n' "\$n" > "$home/gen-count"
+: > "$home/gen-started-\$n"
+while [ ! -e "$home/gen-release-\$n" ]; do
+  [ "\$SECONDS" -lt 60 ] || exit 75
+  sleep 0.05
+done
+jq --arg n "\$n" '.charted += [{id: ("generation-" + \$n), repo: "sample", title: ("Generation " + \$n), reason: "", dispatchable: true}]' "$home/payload.json"
+SH
+  chmod +x "$home/fakebin/generator"
+  wait_for_file() {  # <path> <what>
+    local j=0
+    while [ ! -e "$1" ]; do
+      [ "$j" -lt 200 ] || fail "$2"
+      sleep 0.05
+      j=$((j + 1))
+    done
+  }
+  FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/generator" run_board "$home" build > "$home/build.out" 2>&1 &
+  build_pid=$!
+  wait_for_file "$home/gen-started-1" "build never started deriving"
+  out=$(FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/generator" run_board "$home" refresh) \
+    || fail "a refresh during a deriving build failed: $out"
+  case "$out" in busy:*) ;; *) fail "a refresh during a deriving build did not yield: $out" ;; esac
+  [ -e "$home/state/.bearings-board-refresh-pending" ] || fail "the yielding refresh left no pending marker"
+  [ "$(board_charted_ids "$home")" = "sample-queued" ] \
+    || fail "the board changed while the build was still deriving: $(board_charted_ids "$home")"
+  : > "$home/gen-release-1"
+  wait_for_file "$home/gen-started-2" "build ran no follow-up after finding the pending marker"
+  assert_absent "$home/state/.bearings-board-refresh-pending" "the follow-up did not clear the pending marker first"
+  [ "$(board_charted_ids "$home")" = "sample-queued,generation-1" ] \
+    || fail "build did not publish its own payload before the follow-up: $(board_charted_ids "$home")"
+  : > "$home/gen-release-2"
+  wait "$build_pid" || fail "build failed: $(cat "$home/build.out")"
+  case "$(head -1 "$home/build.out")" in "board: $home/.lavish/bearings-board.html") ;; *) fail "build did not report the board first: $(cat "$home/build.out")" ;; esac
+  [ "$(grep -c '^refreshed: ' "$home/build.out")" = 1 ] \
+    || fail "build did not report exactly one follow-up publish: $(cat "$home/build.out")"
+  grep -q '^armed: lavish-\|^already-armed: lavish-' "$home/build.out" \
+    || fail "build did not serve the board after its follow-up: $(cat "$home/build.out")"
+  [ "$(board_charted_ids "$home")" = "sample-queued,generation-2" ] \
+    || fail "the follow-up did not publish the newer state: $(board_charted_ids "$home")"
+  i=0
+  while [ "$i" -lt 10 ]; do sleep 0.1; i=$((i + 1)); done
+  [ "$(cat "$home/gen-count")" = 2 ] || fail "build looped past one follow-up: $(cat "$home/gen-count") generations"
+  assert_absent "$home/state/.bearings-board-refresh-pending" "a pending marker survived the build"
+  assert_absent "$home/state/.bearings-board-refresh.lock" "the refresh lock was not released after build"
+  pass "build derives under the lock and honors a refresh that yielded meanwhile with one follow-up publish"
+}
+
 test_build_without_a_payload_generates_one() {
   local home out
   home=$(make_home build-generated)
@@ -1180,5 +1241,6 @@ test_refresh_stamps_every_attempt_and_every_failure
 test_refresh_detach_returns_before_the_generation_finishes
 test_a_busy_refresh_yields_exactly_one_follow_up_publish
 test_build_waits_for_an_in_flight_refresh
+test_build_honors_a_refresh_that_yielded_while_it_generated
 test_build_without_a_payload_generates_one
 test_serve_refuses_without_a_board
