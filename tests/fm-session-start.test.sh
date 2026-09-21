@@ -1106,7 +1106,8 @@ EOF
   assert_contains "$out" "working: step 7" "default status tail missing the most recent line"
   assert_contains "$out" "working: step 3" "default status tail (5 lines) missing an expected recent line"
   assert_not_contains "$out" "working: step 1" "default status tail (5 lines) leaked an older line"
-  assert_contains "$out" "$home/state/task-a.status" "digest did not print the full status log path for a deeper read"
+  assert_contains "$out" "full log: state/task-a.status" "digest did not print the full status log path for a deeper read"
+  assert_not_contains "$out" "full log: $home/state/task-a.status" "the status log path was printed absolute instead of relative to the home"
   assert_contains "$out" "a bounded tail of every state/*.status" "read-once contract does not distinguish bounded status tails"
 
   out=$(FM_SESSION_START_STATUS_TAIL=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
@@ -1114,6 +1115,49 @@ EOF
   assert_not_contains "$out" "working: step 5" "FM_SESSION_START_STATUS_TAIL=2 did not bound the tail to 2 lines"
 
   pass "status tail is bounded to the configured line count, with the full log path always printed"
+}
+
+# The wake-EVENT caveat is section-wide, not per task, and a task's worktree
+# line is dropped only when it is the project's pooled Treehouse slot: the
+# fleet view still carries that path, while any other placement stays in the
+# digest as recovery evidence.
+test_fleet_state_says_wake_event_once_and_omits_pooled_worktree() {
+  local rec root home fakebin out w project slot plain caveats
+  rec=$(new_world pooled-worktree)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live"
+  w=${root%/root}
+  project="$home/projects/sample"
+  mkdir -p "$home/projects" "$w/pool/1"
+  git init -q -b main "$project"
+  git -C "$project" commit -q --allow-empty -m init
+  slot="$w/pool/1/sample"
+  git -C "$project" worktree add -q "$slot" -b fm/pooled >/dev/null 2>&1
+  printf '{"worktrees":[{"name":"1","path":"%s"}]}\n' "$slot" > "$w/pool/treehouse-state.json"
+  plain="$w/plain-worktree"
+  git -C "$project" worktree add -q "$plain" -b fm/plain >/dev/null 2>&1
+
+  printf 'window=fm-sess:live\nworktree=%s\nproject=%s\nkind=ship\n' "$slot" "$project" > "$home/state/task-pooled.meta"
+  printf 'working: on the pooled slot\n' > "$home/state/task-pooled.status"
+  printf 'window=fm-sess:live\nworktree=%s\nproject=%s\nkind=ship\n' "$plain" "$project" > "$home/state/task-plain.meta"
+  printf 'working: on a plain worktree\n' > "$home/state/task-plain.status"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_not_contains "$out" "worktree=$slot" "the pooled Treehouse slot path was printed in the per-task block"
+  assert_contains "$out" "worktree=$plain" "a non-pooled worktree lost its path from the per-task block"
+  assert_contains "$out" "worktree= is omitted for a pooled Treehouse slot" "the digest did not say once that pooled worktree lines are omitted"
+  assert_contains "$out" "full log: state/task-pooled.status" "the pooled task lost its relative log path"
+  assert_contains "$out" "full log: state/task-plain.status" "the plain task lost its relative log path"
+  assert_contains "$out" "log paths are relative to $home" "the digest did not name the home the log paths are relative to"
+  caveats=$(printf '%s\n' "$out" | grep -c 'wake-EVENT history, not current state')
+  [ "$caveats" -eq 1 ] || fail "the wake-EVENT caveat was printed $caveats times instead of once for the section: $out"
+
+  pass "the fleet-state section states the wake-EVENT caveat once and omits only a pooled worktree path"
 }
 
 # A crewmate writes its own status lines, so nothing upstream bounds their
@@ -1145,7 +1189,7 @@ EOF
   assert_contains "$out" " [truncated]" "an over-long status line was not marked as truncated"
   assert_contains "$out" "working: short line kept whole" "the cap mangled a status line already under it"
   assert_contains "$out" "each capped at 220 characters" "the status tail header does not disclose its per-line cap"
-  assert_contains "$out" "$home/state/task-cap.status" "a capped tail dropped the full log path that recovers the rest"
+  assert_contains "$out" "full log: state/task-cap.status" "a capped tail dropped the full log path that recovers the rest"
 
   # Nothing the tail emits may exceed the cap, and the padded line really was
   # long enough to exercise it.
@@ -1178,7 +1222,7 @@ EOF
   assert_contains "$out" "--- task-orphan ---" "digest did not print the orphan status id"
   assert_contains "$out" "orphan: step 6" "orphan status tail missing the newest line"
   assert_not_contains "$out" "orphan: step 1" "orphan status tail was not bounded"
-  assert_contains "$out" "$home/state/task-orphan.status" "orphan status tail did not print the full log path"
+  assert_contains "$out" "full log: state/task-orphan.status" "orphan status tail did not print the full log path"
 
   matched_count=$(printf '%s\n' "$out" | grep -F -c 'matched: surfaced once')
   orphan_count=$(printf '%s\n' "$out" | grep -F -c 'orphan: step 6')
@@ -2690,6 +2734,7 @@ test_session_start_preserves_transiently_unreadable_tmux
 test_session_start_preserves_proven_bare_shell_recovery
 test_session_start_relaunches_herdr_husk_secondmate
 test_status_tail_bounding
+test_fleet_state_says_wake_event_once_and_omits_pooled_worktree
 test_status_tail_line_cap
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux

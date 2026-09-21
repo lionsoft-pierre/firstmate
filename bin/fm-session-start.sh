@@ -44,8 +44,11 @@
 #   5. read-once contract - the do-not-re-read contract covering every source
 #                       represented by the two digests below.
 #   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
-#                       every state/*.meta, a bounded state/*.status tail,
-#                       the away posture (state/.afk-contract and the legacy
+#                       every state/*.meta (minus a pooled-slot worktree line,
+#                       see print_meta_block), a bounded state/*.status tail
+#                       labeled once per section as wake-EVENT history with
+#                       each full log path printed relative to the home, the
+#                       away posture (state/.afk-contract and the legacy
 #                       state/.afk daemon flag), and a cheap per-task
 #                       endpoint-liveness read:
 #                       read-only, always runs.
@@ -524,10 +527,36 @@ print_backlog_compact() {
   fi
 }
 
+# A path under the home prints relative to it: the home is named once at the
+# top of the fleet-state section, and every task repeats only the short form.
+home_relative_path() {
+  case "$1" in
+    "$FM_HOME"/*) printf '%s\n' "${1#"$FM_HOME"/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# The per-task metadata block, minus one path the fleet view already carries:
+# a worktree that is the project's pooled Treehouse slot is the default
+# placement rather than task identity, so its line is dropped here and
+# bin/fm-fleet-view.sh or bin/fm-crew-state.sh <id> prints it on demand. Any
+# other worktree stays, because a non-default placement is recovery evidence.
+print_meta_block() {
+  local meta=$1 project worktree
+  project=$(fm_meta_get "$meta" project)
+  worktree=$(fm_meta_get "$meta" worktree)
+  if [ -n "$project" ] && [ -n "$worktree" ] && [ -d "$project" ] \
+    && fm_treehouse_pool_slot "$project" "$worktree"; then
+    grep -v '^worktree=' "$meta"
+  else
+    cat "$meta"
+  fi
+}
+
 print_status_tail() {
   local status=$1 line
-  printf 'status tail (last %s line(s), each capped at %s characters, wake-EVENT history, not current state; full log: %s):\n' \
-    "$STATUS_TAIL" "$FM_LINE_CAP_DEFAULT" "$status"
+  printf 'status tail (last %s line(s), each capped at %s characters; full log: %s):\n' \
+    "$STATUS_TAIL" "$FM_LINE_CAP_DEFAULT" "$(home_relative_path "$status")"
   # A crewmate writes its own status lines, so their length is unbounded: one
   # observed line ran 865 characters. Cap each one the way the wake digest's
   # OPEN DECISIONS section does; the lede carries the state word and the key,
@@ -812,17 +841,15 @@ data/backlog.md or state/*.status: re-reading everything defeats the entire
 point of this command.
 
 Go to a source directly only when:
-  - this digest flagged it ABSENT (then rebuild or create it per AGENTS.md),
-  - its contents looked unparseable or corrupt,
-  - an individual full status log is needed for older wake-event history, or a
-    status line was capped and its tail matters (each task's full log path is
-    printed with its tail),
-  - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full, or data/backlog.md),
-  - the backlog listing disclosed omitted queued items and this turn needs them,
-  - the NETWORK CHECKS section reported its checks still IN PROGRESS and this
-    turn needs their verdict (bin/fm-startup-network.sh report),
-  - or a STARTUP TRUNCATED banner named the stage that would have printed it, in
-    which case that stage's sources were never emitted and must be reconciled.
+  - a STARTUP TRUNCATED banner named the stage that would have printed it (its
+    sources were never emitted and must be reconciled), or this digest flagged
+    it ABSENT (then rebuild or create it per AGENTS.md) or corrupt,
+  - a bounded listing needs its remainder: older wake-event history or a
+    capped status line (the full log is each task's state/<id>.status), a full
+    task body (bin/fm-tasks-axi.sh show <id> --full), or disclosed omitted
+    queued items,
+  - or the NETWORK CHECKS section reported its checks still IN PROGRESS and
+    this turn needs their verdict (bin/fm-startup-network.sh report).
 EOF
 
 # --- 6. fleet-state digest ---------------------------------------------
@@ -833,13 +860,18 @@ section "FLEET STATE"
 print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
 
 subsection "Work under way (state/*.meta)"
+# Said once for the whole section rather than once per task: every status
+# tail below is wake-EVENT history, not current state, its full log path is
+# relative to this home, and a pooled worktree line is omitted (see
+# print_meta_block).
+printf 'status tails are wake-EVENT history, not current state (bin/fm-crew-state.sh <id> reads current state); log paths are relative to %s; worktree= is omitted for a pooled Treehouse slot (bin/fm-fleet-view.sh has the path).\n' "$FM_HOME"
 META_FOUND=0
 for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] || continue
   META_FOUND=1
   id=$(basename "$meta" .meta)
   printf '\n--- %s ---\n' "$id"
-  cat "$meta"
+  print_meta_block "$meta"
 
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
@@ -858,7 +890,7 @@ for meta in "$STATE"/*.meta; do
   if [ -f "$status" ]; then
     print_status_tail "$status"
   else
-    printf 'status tail: (no status file yet: %s)\n' "$status"
+    printf 'status tail: (no status file yet: %s)\n' "$(home_relative_path "$status")"
   fi
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'

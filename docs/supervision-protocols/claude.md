@@ -12,16 +12,7 @@ When this session owns supervision and away mode is not active:
 4. On the one `Stop hook feedback` automatic-mechanism failure notice (`firstmate watcher auto-arm FAILED ...`), drain, inspect the automatic mechanism failure, and do not turn the notice into a repeating manual-arm loop.
 5. If the Stop hook does not claim the home or reports an exhausted failure, inspect its registration and watcher startup path before ending blind.
    Keep the Stop-owned automatic mechanism as the only Claude arm owner.
-6. Treat `watcher: started ...` and `watcher: attached ...` inside automatic arm output as proof that one live cycle exists.
-   On attach, the arm follows verified identity-matched successors instead of exiting when the first cycle ends.
-7. The durable wake queue preserves actionable events between a rewake and the next Stop-launched arm, while the bounded turn-end guard prevents a blind Stop when recovery did not start.
-   No PreToolUse hook denies fleet commands based on watcher status.
-   [`watcher-continuity.md`](../watcher-continuity.md) owns the exact session-lock recovery boundary.
-8. The turn-end guard (`bin/fm-turnend-guard.sh --claude`) remains the final backstop.
-   It requires the PID-strict live-watcher and fresh-beacon predicate at the Stop boundary, except for the Claude-specific foreign-live-owner safe exit owned by [`turnend-guard.md`](../turnend-guard.md#guard-predicates); that document also owns the distinct model-aware mid-turn pull-guard rules.
-   Otherwise, it allows the stop when a watcher is healthy or an open auto-arm generation claim owns recovery, while fresh failure epochs advance the bounded one-time attended fail-open progression described there.
-9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
+6. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
 
 The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
-Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
-See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract and the Claude ownership model.
+[`watcher-continuity.md`](../watcher-continuity.md) owns the arm layer, its successor chain, the durable wake queue between rewake and re-arm, and the session-lock recovery boundary; [`turnend-guard.md`](../turnend-guard.md) owns the turn-end guard backstop (`bin/fm-turnend-guard.sh --claude`) and its predicates.
