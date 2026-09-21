@@ -1,7 +1,7 @@
 ---
 name: stow
 description: >-
-  Use when the captain invokes /stow, before a session reset or context compaction, or periodically to keep operational memory current.
+  Use when the captain invokes /stow or says to stow what you have learned, before a session reset or context compaction, or periodically to keep operational memory current.
 user-invocable: true
 metadata:
   internal: true

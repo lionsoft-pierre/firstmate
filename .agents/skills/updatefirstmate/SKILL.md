@@ -1,7 +1,7 @@
 ---
 name: updatefirstmate
 description: >-
-  Use when the captain invokes /updatefirstmate or asks to update firstmate.
+  Use when the captain invokes /updatefirstmate, asks to update firstmate, or asks to pull the latest firstmate.
 user-invocable: true
 metadata:
   internal: true
