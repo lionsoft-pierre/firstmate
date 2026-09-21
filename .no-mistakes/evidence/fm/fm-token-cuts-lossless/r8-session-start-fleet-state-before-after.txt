@@ -1,0 +1,116 @@
+##### BASE (/tmp/fm-base-43bf6d3/bin/fm-session-start.sh)
+(fixture home: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home; pooled slot: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/pool/1/sample; plain worktree: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/plain-worktree)
+
+FLEET STATE
+================================================================================
+
+data/backlog.md
+--------------------------------------------------------------------------------
+ABSENT
+
+Work under way (state/*.meta)
+--------------------------------------------------------------------------------
+
+--- task-plain ---
+window=fm-sess:live
+worktree=/private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/plain-worktree
+project=/private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home/projects/sample
+kind=ship
+endpoint: alive (backend=tmux window=fm-sess:live)
+status tail (last 5 line(s), each capped at 220 characters, wake-EVENT history, not current state; full log: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home/state/task-plain.status):
+working: on a plain worktree
+
+--- task-pooled ---
+window=fm-sess:live
+worktree=/private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/pool/1/sample
+project=/private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home/projects/sample
+kind=ship
+endpoint: alive (backend=tmux window=fm-sess:live)
+status tail (last 5 line(s), each capped at 220 characters, wake-EVENT history, not current state; full log: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home/state/task-pooled.status):
+working: on the pooled slot
+
+Orphan status logs (state/*.status without matching .meta)
+--------------------------------------------------------------------------------
+(none)
+
+AFK
+--------------------------------------------------------------------------------
+absent
+
+
+----- read-once contract as printed -----
+Go to a source directly only when:
+  - this digest flagged it ABSENT (then rebuild or create it per AGENTS.md),
+  - its contents looked unparseable or corrupt,
+  - an individual full status log is needed for older wake-event history, or a
+    status line was capped and its tail matters (each task's full log path is
+    printed with its tail),
+  - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full, or data/backlog.md),
+  - the backlog listing disclosed omitted queued items and this turn needs them,
+  - the NETWORK CHECKS section reported its checks still IN PROGRESS and this
+    turn needs their verdict (bin/fm-startup-network.sh report),
+  - or a STARTUP TRUNCATED banner named the stage that would have printed it, in
+    which case that stage's sources were never emitted and must be reconciled.
+
+
+[wake-EVENT caveat occurrences: 2]
+[read-once contract "Go to a source directly only when" bullets: 7]
+[fleet-state section bytes: 1792]
+
+##### TARGET (/Users/pierre/.no-mistakes/worktrees/bfbab1c21177/01M32836N1Z7CYDZTNP4NETZWF/bin/fm-session-start.sh)
+(fixture home: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home; pooled slot: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/pool/1/sample; plain worktree: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/plain-worktree)
+
+FLEET STATE
+================================================================================
+
+data/backlog.md
+--------------------------------------------------------------------------------
+ABSENT
+
+Work under way (state/*.meta)
+--------------------------------------------------------------------------------
+status tails are wake-EVENT history, not current state (bin/fm-crew-state.sh <id> reads current state); log paths are relative to /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home; worktree= is omitted for a pooled Treehouse slot (bin/fm-fleet-view.sh has the path).
+
+--- task-plain ---
+window=fm-sess:live
+worktree=/private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/plain-worktree
+project=/private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home/projects/sample
+kind=ship
+endpoint: alive (backend=tmux window=fm-sess:live)
+status tail (last 5 line(s), each capped at 220 characters; full log: state/task-plain.status):
+working: on a plain worktree
+
+--- task-pooled ---
+window=fm-sess:live
+project=/private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-session-start-tests.5FaWUd/r8-evidence/home/projects/sample
+kind=ship
+endpoint: alive (backend=tmux window=fm-sess:live)
+status tail (last 5 line(s), each capped at 220 characters; full log: state/task-pooled.status):
+working: on the pooled slot
+
+Orphan status logs (state/*.status without matching .meta)
+--------------------------------------------------------------------------------
+(none)
+
+AFK
+--------------------------------------------------------------------------------
+absent
+
+
+----- read-once contract as printed -----
+Go to a source directly only when:
+  - a STARTUP TRUNCATED banner named the stage that would have printed it (its
+    sources were never emitted and must be reconciled), or this digest flagged
+    it ABSENT (then rebuild or create it per AGENTS.md) or corrupt,
+  - a bounded listing needs its remainder: older wake-event history or a
+    capped status line (the full log is each task's state/<id>.status), a full
+    task body (bin/fm-tasks-axi.sh show <id> --full), or disclosed omitted
+    queued items,
+  - or the NETWORK CHECKS section reported its checks still IN PROGRESS and
+    this turn needs their verdict (bin/fm-startup-network.sh report).
+
+
+[wake-EVENT caveat occurrences: 1]
+[read-once contract "Go to a source directly only when" bullets: 3]
+[fleet-state section bytes: 1705]
+
