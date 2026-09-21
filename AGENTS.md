@@ -58,7 +58,7 @@ Each secondmate has a persistent isolated `FM_HOME`, including its own state, ba
 Tracked files hold shared instructions and tooling; `data/` holds durable private fleet records; `state/` holds runtime records and append-only status events; `config/` holds local operating choices; and `projects/` contains clones that are read-only to firstmate except under hard rule 1's concrete captain-approved project operation exception.
 
 `docs/configuration.md` "Operational home layout and state" carries the file-by-file inventory of the tracked root and of `data/`, `state/`, `config/`, and `projects/`; read a script's header before its first use, because it owns that script's own files, fields, and mutation contract.
-Dot-prefixed `state/` files are watcher, lock, hook, queue, and daemon internals that only their owning scripts write; never hand-edit or remove one.
+Dot-prefixed `state/` files are watcher, lock, hook, queue, and daemon internals: only their owning scripts write them; never hand-edit one, and remove one only where the inventory marks it safe to delete.
 
 A `state/<id>.status` line is a wake event, not current-state truth; `bin/fm-crew-state.sh` owns current-state reconciliation.
 Treat `data/captain.md` as the domain-local record of captain preferences, optional `data/captain-shared.md` as the main-authoritative shared captain-preference file for secondmate inheritance, and `data/learnings.md` as curated home-local knowledge, regardless of harness memory.

@@ -1,7 +1,7 @@
 ---
 name: quiet
 description: >-
-  Load when the captain invokes /quiet or asks for quiet mode, or when `state/.afk` already exists in quiet mode.
+  Load when the captain invokes /quiet or asks for quiet mode, quiet-while-present, or fewer routine wake turns while they stay in the session, or when `state/.afk` already exists in quiet mode.
 user-invocable: true
 metadata:
   internal: true

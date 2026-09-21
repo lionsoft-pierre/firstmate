@@ -1,7 +1,7 @@
 ---
 name: bearings
 description: >-
-  Use when the captain invokes /bearings or asks for a bearings report, morning brief, status report, catch-up, or what is in the works, on a contributions check wake, when filing work linked to an upstream issue, and on a procevent lavish wake whose source id matches the stable bearings board.
+  Use when the captain invokes /bearings or asks for a bearings report, morning brief, status report, catch-up, where did I leave off, or what is in the works, on a contributions check wake, when filing work linked to an upstream issue, and on a procevent lavish wake whose source id matches the stable bearings board.
 user-invocable: true
 metadata:
   internal: true
