@@ -12,7 +12,7 @@ metadata:
 Generate a complete current snapshot from the fleet's current state, so the captain can resume in one read after a break, a night, or a context reset.
 Plain `/bearings` returns only the concise four-section chat digest.
 Only `/bearings file` writes the dated markdown report artifact and then returns the concise four-section chat digest linked to that report.
-Only `/bearings lavish` builds the interactive fleet board beside that digest, through `bin/fm-bearings-board.sh` (its header owns every board mechanic and the fm-bearings-board.v1 payload contract).
+Only `/bearings lavish` builds the interactive fleet board beside that digest, through `bin/fm-bearings-board.sh` (its header owns every board mechanic; `bin/fm-bearings-board-lib.sh` owns the fm-bearings-board.v1 payload contract, and `bin/fm-bearings-snapshot.sh --board` derives the payload with no model in the loop).
 A digest/build invocation is operationally read-only apart from observational remote-ledger cache refreshes, durable per-target reconcile-notify requests when the captured state needs them, plus the explicit per-mode artifacts: the dated report in file mode, and in lavish mode the board file plus the answer binding and source registration that `bin/fm-bearings-board.sh build` records through their own owners.
 During that invocation it never tears down a task, merges a PR, dispatches new work, steers a worker, answers a decision, cleans up work, or mutates backlog or task state.
 Board answers are acted on later under the normal authority rules; this skill's board-wake section explicitly owns the guarded routing at that time.
@@ -90,30 +90,16 @@ For a contribution wake or linked-issue filing, go directly to Contribution foll
 ## Lavish board mode
 
 `/bearings lavish` adds one deliverable beside the unchanged chat digest: the interactive fleet board, a myfirstmate-styled Lavish page where the captain answers Captain's Call items directly instead of replying in chat.
-`bin/fm-bearings-board.sh` owns every board mechanic - the stable board path, fm-bearings-board.v1 payload validation, template injection, live Lavish session verification and ended-session reopening, the any-origin answer binding, and listener registration - so the per-invocation work is composing the payload and running its `build`.
+The board is live and model-free: `bin/fm-bearings-snapshot.sh --board` derives its fm-bearings-board.v1 payload mechanically from the same snapshot (its header owns every derivation rule), `bin/fm-bearings-board.sh` owns every board mechanic (its header owns the publish, serve, build, and refresh contracts), and the watcher re-derives and republishes the board on its own cadence and on observed fleet change, so an open page reloads by itself and no agent ever composes board copy.
 
-Compose the payload from the same snapshot with the same ranking judgment as the chat digest, plus these board rules:
+Run `bin/fm-bearings-board.sh build` once, with no payload argument.
+Its serve-first sequence generates the payload, publishes the board, establishes and verifies its Lavish session with `lavish-axi`, reopens an ended session when necessary, and only then binds the answer source and proves a live polling listener; use the session URL it prints in the chat digest.
+Never compose, edit, or hand-inject a payload, never bind or arm the board before its session is listed open, and never run `lavish-axi poll` for the board yourself: the armed source's supervised runner owns the blocking poll, and both the build and the watcher's ordinary reconcile repair a missing listener, so no conversational turn ever blocks on the board.
+The build is the only path that reopens a session the captain ended; the automatic refresh never does, so a board the captain closed stays closed until `/bearings lavish` is invoked again.
 
-- A Captain's Call decision key is the captain-held TASK ID from `decisions_open` (legacy `<origin>-decision-<key>` rows are already task ids); a merge card's key is `merge.<task-id>`; the Charted Next dispatch picker's key is `dispatch.charted`.
-- Before carding a hold, check that its SUBJECT has not already landed, and omit it when it has. `build` drops a card whose task or PR appears in the payload's own landed rows, and one whose task is no longer an open captain call. When a hold waits on one specific PR, put that PR in the card's `pr_url`. When it concerns a published version, put the artifact and numeric three-part version in the card's structured `subject`; landed rows for releases carry the same identity, and a matching or newer version drops the card. Identity matching is structured only, so verify any subject without one of these identities against current reality before carding it.
-- Never author a `reconcile` option on any card. `build` gives every decision card the standard reconcile choice itself, and the payload validator reserves that value across all card types; recommendations must name an authored option.
-- Compose exactly one decision card per captain-held task id. When one task carries multiple questions, consolidate all of them and their options into that card; never emit duplicate cards with the same task-id key.
-- Decision cards carry agent-authored copy: a short noun-phrase title, one-line `about` and `decide` context rows, and option labels with hints, with the recommended option marked.
-- Card `type` (decision, merge, credential) is your composing judgment from the row's content; no backlog field types a card for you.
-- When the card's task is a captain-gated WORK item (the answer should free it to proceed rather than complete it), set the card's `close: "release"` so the answer lifts the hold instead of closing the task; question-shaped items omit it.
-- A Charted Next row's optional `kind` separates work from alarms: omit it (or set `"queued"`) for real queued work, and set `"warning"` on every action-free fleet-integrity notice - the `(main-inventory)` gate, the `(return-catchup)` gate, an unavailable secondmate home, and an inventory-mismatch repair notice. The board badges a warning row `needs repair` instead of `waiting` and leaves it out of the Charted Next count, so those rows never read as dispatchable queued work.
-- `charted_more` counts omitted queued rows only, while `charted_warning_more` counts omitted warning rows only; keep both counts separate whenever the board payload truncates Charted Next.
-- Every Underway row copies the task-identifying `in_flight.name` from the snapshot into an explicit `name` field, which the board leads with while keeping the run status on its second line.
-  The snapshot command's header owns its durable-title-or-id normalization; never replace the projected label with run status or invent another label.
-- Every Charted Next row copies the snapshot gate's durable filed date into `filed`, and the board orders the section by it, newest filed first.
-  Follow `bin/fm-bearings-board.sh`'s payload contract for the accepted format.
-  Omit it or pass null for a row with no durable filed date - the main-inventory or return-catchup warning, an unavailable secondmate home, or a queued row filed before dates were recorded - and the board keeps those rows in payload order after every dated row.
-- Every Captain's Call item and every Underway, Recently Landed, and Charted Next row carries an explicit `repo` field. Fill it from the snapshot and task records wherever known; use null or an empty string only as the deliberate genuinely-no-repo marker, in which case the template may show the internal id. Ids otherwise stay in the payload only as the routing channel, and composed reasons name blockers in plain words.
-
-Run `build` once after composing the payload.
-Its serve-first sequence publishes the board, establishes and verifies its Lavish session with `lavish-axi`, reopens an ended session when necessary, and only then binds the answer source and proves a live polling listener; use the session URL it prints in the chat digest.
-Never bind or arm the board before its session is listed open.
-Never run `lavish-axi poll` for the board yourself: the armed source's supervised runner owns the blocking poll, and both the build and the watcher's ordinary reconcile repair a missing listener, so no conversational turn ever blocks on the board.
+The keys the board sends are fixed by the generator: a Captain's Call decision key is the captain-held task id (a secondmate hold is keyed `<mate>.<task-id>` and stays announced for hand routing), a merge card's key is `merge.<task-id>`, and the Charted Next dispatch picker's key is `dispatch.charted`.
+What the captain can pick on a decision card comes from the hold itself: file every captain hold through `bin/fm-captain-hold.sh hold` with one `--option <value>=<label>` per answer the captain can give and `--recommend <value>` for your recommendation, so the card offers those exact choices; a hold filed without options renders the reason with a freeform answer box only.
+Every decision card also carries the standard `reconcile` choice, which the generator never authors and the publish step always injects.
 
 ### Handling a board wake
 
@@ -130,7 +116,7 @@ Route the non-decision keys yourself:
 - `merge.<task-id>` is the captain's explicit merge order; follow the merge ruling below.
 - `dispatch.charted` carries comma-separated task ids the captain picked to start now; verify each id against the current backlog - still queued, blocker and time gate actually clear - then dispatch through the normal lifecycle, and report any id that no longer qualifies instead of forcing it.
 
-After handling, rebuild the board from a fresh snapshot so acted-on items leave Captain's Call, and echo every action taken in chat so the board and chat never diverge silently.
+After handling, echo every action taken in chat so the board and chat never diverge silently; the acted-on items leave Captain's Call on the board's next automatic refresh, and `bin/fm-bearings-board.sh refresh` forces that refresh now when the wake handling should be visible at once.
 
 ### The merge-click ruling (captain-decided)
 

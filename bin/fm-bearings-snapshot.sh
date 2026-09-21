@@ -73,6 +73,31 @@
 # waste capacity, and --all-landed switches back to the complete global newest-first
 # order. Which closed rows either side contributes is bin/fm-landed-lib.sh's rule.
 #
+# --board is the model-free board generator. It projects the same bounded model
+# plus the canonical snapshot straight into an fm-bearings-board.v1 payload
+# (bin/fm-bearings-board-lib.sh owns that contract) with no prose authoring:
+#   - a live captain hold is one decision card keyed by its task id (a
+#     secondmate hold by <mate>.<task-id>, which the main-home keyed intake
+#     skips and firstmate routes by hand); its title is the task title, its
+#     `about` is the hold reason verbatim, its options are the task body's
+#     `Option: <value> = <label>` lines with `Recommend: <value>` marking one
+#     (bin/fm-captain-hold.sh hold --option/--recommend writes them), a
+#     freeform answer box is always offered, and a hold on a work item
+#     (kind other than captain) closes with `release`;
+#   - a task with a recorded PR (pr= metadata) whose current state is done
+#     and whose merge posture is not yolo becomes one merge card keyed
+#     merge.<task-id>, with `risk` copied from a risk= metadata value and
+#     "unrecorded" otherwise, and never while its detail already reads merged;
+#   - Underway rows are in_flight rows with the full task title, Recently
+#     Landed rows are the landed rows with repo and PR URL, and Charted Next
+#     rows are the gates with the synthetic (main-inventory) and
+#     (return-catchup) rows, unavailable secondmate homes, and pending
+#     inventory reconciles typed `warning`; only a main-home queued row with
+#     no blocker and no hold is dispatchable.
+# --board implies --json, --all-in-flight, and --all-queued, lifts the
+# decisions bound, keeps the landed bounds, and validates its own output before
+# printing it: an invalid projection exits 2 rather than emitting a payload.
+#
 # Flags:
 #   (default)        compact projection with bounded remote-ledger collection, TOON
 #   --json           the same projected model as JSON (machine/debug; parity form)
@@ -87,6 +112,8 @@
 #   --all-recorded-prs include every locally recorded PR
 #   --all-unhealthy  include every unhealthy endpoint
 #   --all-pr-repos   query every discovered repository under --include-prs
+#   --board          emit the fm-bearings-board.v1 payload instead of the bearings
+#                    model (JSON, machine-derived, never prose-authored; see below)
 #   -h,--help        usage
 #
 # Output contract: `fm-bearings.v1`. No locks or reports; the underlying snapshot's
@@ -101,6 +128,9 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 # shellcheck source=bin/fm-landed-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
+# shellcheck source=bin/fm-bearings-board-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-bearings-board-lib.sh"  # fm_bearings_board_validate: the board payload contract
 
 # Bounds (overridable for tests / large fleets).
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
@@ -139,6 +169,7 @@ usage: fm-bearings-snapshot.sh [--json] [--include-prs] [--fields <list>]
                                [--all-reports] [--all-queued]
                                [--all-recorded-prs] [--all-unhealthy]
                                [--all-pr-repos]
+                               [--board]
 
 Compact bearings projection over fm-fleet-snapshot.sh. TOON by default.
 Default collection performs bounded concurrent remote-ledger reads for registered
@@ -182,6 +213,7 @@ ALL_LANDED=0
 ALL_RECORDED_PRS=0
 ALL_UNHEALTHY=0
 ALL_PR_REPOS=0
+BOARD=0
 FIELDS=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -196,6 +228,7 @@ while [ $# -gt 0 ]; do
     --all-recorded-prs) ALL_RECORDED_PRS=1 ;;
     --all-unhealthy) ALL_UNHEALTHY=1 ;;
     --all-pr-repos) ALL_PR_REPOS=1 ;;
+    --board) BOARD=1; FORMAT=json; ALL_IN_FLIGHT=1; ALL_QUEUED=1 ;;
     --fields) shift; FIELDS=${1:-} ;;
     --fields=*) FIELDS=${1#--fields=} ;;
     -h|--help) usage; exit 0 ;;
@@ -205,6 +238,10 @@ while [ $# -gt 0 ]; do
 done
 
 command -v jq >/dev/null 2>&1 || { echo "fm-bearings-snapshot: jq not found" >&2; exit 1; }
+# The board exists to show every live call, so board mode lifts the decisions
+# bound; the chat digest keeps its bounded default.
+DECISIONS_N=$FM_BEARINGS_DECISIONS
+[ "$BOARD" = 0 ] || DECISIONS_N=100000
 
 # The shared read-only away-return owner is consulted, not obeyed. An active
 # away window still refuses here: the correct answer to a bearings request then
@@ -349,7 +386,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson landed_n "$FM_BEARINGS_LANDED" \
   --argjson landed_per_home_n "$FM_BEARINGS_LANDED_PER_HOME" \
   --argjson in_flight_n "$FM_BEARINGS_IN_FLIGHT" \
-  --argjson decisions_n "$FM_BEARINGS_DECISIONS" \
+  --argjson decisions_n "$DECISIONS_N" \
   --argjson secondmates_n "$FM_BEARINGS_SECONDMATES" \
   --argjson gates_n "$FM_BEARINGS_GATES" \
   --argjson reports_n "$FM_BEARINGS_REPORTS" \
@@ -684,6 +721,135 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         (if $include_prs == 1 and $pr_rows_capped > 0 then {surface:("candidate_prs showing \($candidate_prs | length) of at least \($pr_rows_min_total); capped in \($pr_rows_capped) repo(s)"), reveal:"raise FM_BEARINGS_PR_LIMIT"} else empty end),
         (if $include_prs == 1 then empty else {surface:"live PR discovery + checks", reveal:"--include-prs"} end) ]) }
 ') || { echo "fm-bearings-snapshot: projection failed" >&2; exit 1; }
+
+# --- board projection: fm-bearings.v1 + canonical snapshot -> fm-bearings-board.v1
+if [ "$BOARD" = 1 ]; then
+  BOARD_MODEL=$(jq -n --argjson snap "$SNAP" --argjson model "$MODEL" --arg now "$NOW" '
+    def trunc($n): if . == null then null else
+      (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
+    def https: if (type == "string" and startswith("https://")) then . else null end;
+    def slugify: tostring | gsub("[^A-Za-z0-9._-]+"; "-") | gsub("^-+|-+$"; "")
+      | .[:128] | if length == 0 then "unnamed" else . end;
+    def valid_filed: type == "string"
+      and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$");
+    def dedup_by(f): reduce .[] as $x ([]; if any(.[]; f == ($x | f)) then . else . + [$x] end);
+    def record($id): (first($snap.backlog.records[]? | select(.structured == true and .id == $id)) // null);
+    def mate($id): (first(($snap.secondmate_current.records // [])[] | select(.id == $id)) // null);
+    def option_lines($lines):
+      [ ($lines // [])[]
+        | strings
+        | capture("^Option:[[:space:]]*(?<value>[A-Za-z0-9._-]{1,128})[[:space:]]*(?:=[[:space:]]*(?<label>.*[^[:space:]]))?[[:space:]]*$")
+        | select(.value != "reconcile")
+        | {value, label: (if (.label // "") == "" then .value else .label end)} ]
+      | dedup_by(.value);
+    def recommend_line($lines; $options):
+      (first(($lines // [])[] | strings
+         | capture("^Recommend:[[:space:]]*(?<value>[A-Za-z0-9._-]{1,128})[[:space:]]*$") | .value) // null) as $v
+      | if $v != null and ([$options[].value] | index($v)) != null then $v else null end;
+    def decision_card($d):
+      ($d.owner == "(main)") as $main
+      | (if $main then record($d.id) else null end) as $r
+      | (if $main then null else mate($d.owner) end) as $m
+      | (if $main then null else ($d.id | sub("^[^/]*/"; "")) end) as $plain
+      | (if $m == null then null else (first($m.queued[]? | select(.id == $plain)) // null) end) as $mq
+      | (if $m == null then null else (first($m.decisions_open[]? | select(.id == $plain)) // null) end) as $md
+      | (if $main then ($r.body_lines // []) else ($mq.body_lines // []) end) as $lines
+      | option_lines($lines) as $options
+      | ((if $main then $r.kind else $mq.kind end) // null) as $kind
+      | ((if $main then $r.pr_url else $mq.pr_url end) | https) as $pr
+      | recommend_line($lines; $options) as $rec
+      | {key: ((if $main then $d.key else ($d.owner + "." + $plain) end) | slugify),
+         type: "decision",
+         repo: ((if $main then $r.repo else $mq.repo end) // null),
+         title: (((if $main then $r.title else ($mq.title // $md.summary) end) // $d.summary // $d.id) | trunc(140)),
+         about: (((if $main then $r.hold_reason else ($mq.hold_reason // $md.reason) end) // "captain decision pending") | trunc(400)),
+         decide: (if ($options | length) > 0 then "Pick one, or write your own answer" else "Answer in your own words" end),
+         options: $options,
+         allow_freeform: true,
+         freeform_hint: "Your call, in your own words"}
+      | (if $rec != null then .recommend_value = $rec else . end)
+      | (if $kind != null and $kind != "captain" then .close = "release" else . end)
+      | (if $pr != null then .pr_url = $pr else . end);
+    def merge_card($t):
+      {key: (("merge." + $t.id) | slugify), type: "merge",
+       repo: ($t.backlog.repo // null),
+       title: (($t.backlog.title // $t.id) | trunc(140)),
+       detail: (($t.current_state.detail // "") | trunc(200)),
+       pr_url: $t.pr.url,
+       risk: (if (($t.risk // "") | tostring) != "" then ($t.risk | tostring | trunc(40)) else "unrecorded" end),
+       options: [{value: "merge", label: "Merge now", hint: "Your explicit merge word for this exact PR"},
+                 {value: "hold", label: "Not yet", hint: "Leave the PR open"}],
+       allow_freeform: true, freeform_hint: "Or instruct in your own words"};
+    def merge_ready($t):
+      $t.kind != "secondmate"
+      and (($t.pr.url // null) | https) != null
+      and $t.current_state.state == "done"
+      and (($t.yolo // "") | tostring) != "on"
+      and ((($t.current_state.detail // "") | tostring | test("\\bmerged\\b")) | not);
+    def underway_row($u):
+      (if ($u.id | contains("/")) then null else record($u.id) end) as $r
+      | {id: $u.id,
+         name: ((if $r != null and (($r.title // "") | test("[^[:space:]]")) then $r.title else $u.name end) | trunc(140)),
+         state: $u.state, doing: $u.doing, kind: $u.kind, repo: ($u.repo // null)};
+    def landed_row($l):
+      (if $l.owner == "(main)" then record($l.id) else null end) as $r
+      | (if $l.owner == "(main)" then null
+         else (first(($snap.secondmate_landed.records // [])[] | select(.home_id == $l.owner and .id == $l.id)) // null) end) as $mr
+      | ((($r // $mr).pr_url // null) | https) as $pr
+      | {id: $l.id,
+         what: ((($r // $mr).title // $l.what) | trunc(140)),
+         owner: $l.owner,
+         repo: (($r // $mr).repo // null)}
+      | (if $pr != null then .pr_url = $pr else . end);
+    def gate_row($g):
+      ($g.id | startswith("(")) as $synthetic
+      | ($g.owner == "(main)" and ($synthetic | not)) as $main
+      | (if $main then record($g.id) else null end) as $r
+      | (if ($synthetic or $main) then null else mate($g.owner) end) as $m
+      | (if $m == null then null else (first($m.queued[]? | select(.id == $g.id)) // null) end) as $mq
+      | {id: ($g.id | gsub("[()]"; "") | slugify),
+         title: (((if $main then $r.title elif $mq != null then $mq.title else null end) // $g.title) | trunc(140)),
+         repo: ((if $main then $r.repo else $mq.repo end) // null),
+         reason: (if ($g.reason // "-") == "-" then "" else ($g.reason | trunc(200)) end),
+         dispatchable: ($main and ($g.blocked_by // "-") == "-" and ($g.reason // "-") == "-"
+                        and ($r.state // "") == "queued" and ($r.hold_bucket == null)),
+         kind: (if $synthetic then "warning" else "queued" end)}
+      | (($g.filed // null) as $f | if ($f | valid_filed) then .filed = $f else . end);
+    def warning_rows:
+      [ ($model.secondmates // [])[] | select(.state == "unknown")
+        | {id: (("secondmate." + .id) | slugify),
+           title: ((.id + " home state unavailable") | trunc(140)), repo: null,
+           reason: ((.reason // "current home state unavailable") | trunc(200)),
+           dispatchable: false, kind: "warning"} ]
+      + [ ($model.secondmate_reconcile // [])[]
+        | {id: (("secondmate." + .id + ".reconcile") | slugify),
+           title: ((.id + " inventory needs reconcile") | trunc(140)), repo: null,
+           reason: (((.kind // "inventory mismatch") + (if ((.ids // []) | length) > 0 then ": " + (.ids | join(",")) else "" end)) | trunc(200)),
+           dispatchable: false, kind: "warning"} ];
+    {schema: "fm-bearings-board.v1",
+     home: $model.home,
+     generated: $now,
+     prs_live: false,
+     captains_call: (
+       ([ ($model.decisions_open // [])[] | decision_card(.) ]
+        + [ ($snap.tasks // [])[] | select(merge_ready(.)) | merge_card(.) ])
+       | dedup_by(.key)),
+     underway: [ ($model.in_flight // [])[] | underway_row(.) ],
+     landed: [ ($model.landed // [])[] | landed_row(.) ],
+     charted: ([ ($model.gates // [])[] | gate_row(.) ] + warning_rows) | dedup_by(.id)}
+  ') || { echo "fm-bearings-snapshot: board projection failed" >&2; exit 1; }
+  BOARD_TMP=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-bearings-board.XXXXXX") \
+    || { echo "fm-bearings-snapshot: cannot stage the board payload for validation" >&2; exit 1; }
+  printf '%s\n' "$BOARD_MODEL" > "$BOARD_TMP"
+  if ! fm_bearings_board_validate "$BOARD_TMP"; then
+    rm -f -- "$BOARD_TMP"
+    echo "fm-bearings-snapshot: board projection does not satisfy $FM_BEARINGS_BOARD_SCHEMA; refusing to emit it" >&2
+    exit 2
+  fi
+  rm -f -- "$BOARD_TMP"
+  printf '%s\n' "$BOARD_MODEL"
+  exit 0
+fi
 
 if [ "$FORMAT" = json ]; then
   printf '%s\n' "$MODEL"

@@ -308,6 +308,82 @@ kill "$WATCH_PID" >/dev/null 2>&1 || true
 wait "$WATCH_PID" >/dev/null 2>&1 || true
 WATCH_PID=
 pass "live watcher cadence bounds publication staleness without signals"
+[ ! -e "$CADENCE_HOME/.lavish/bearings-board.html" ] && [ ! -e "$CADENCE_HOME/state/.bearings-board-digest" ] \
+  || fail "a home that never opened the fleet board gained one from the watcher"
+pass "the watcher refreshes no fleet board in a home that never opened one"
+
+# The published fleet board rides the same watcher cadence: with a board file
+# present and no status signal, a backlog-only change is re-derived into the
+# board within FM_BOARD_REFRESH_INTERVAL, through one detached best-effort
+# child that never calls lavish-axi.
+BOARD_HOME="$TMP_ROOT/board-home"
+mkdir -p "$BOARD_HOME/state" "$BOARD_HOME/data" "$BOARD_HOME/config" "$BOARD_HOME/projects"
+printf '# Seeded Firstmate home\n' > "$BOARD_HOME/AGENTS.md"
+cat > "$BOARD_HOME/data/backlog.md" <<'EOF2'
+## In flight
+
+## Queued
+- [ ] board-seed - Seeded queued work (repo: firstmate) (kind: ship) (since 2026-08-01)
+
+## Done
+EOF2
+cat > "$FAKEBIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${LAVISH_CALL_LOG:?}"
+exit 1
+SH
+chmod +x "$FAKEBIN/lavish-axi"
+export LAVISH_CALL_LOG="$TMP_ROOT/board-lavish-calls"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$BOARD_HOME" \
+  "$ROOT/bin/fm-bearings-snapshot.sh" --board > "$BOARD_HOME/payload.json" \
+  || fail "could not derive the seed board payload"
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$BOARD_HOME" \
+  "$ROOT/bin/fm-bearings-board.sh" publish "$BOARD_HOME/payload.json" >/dev/null \
+  || fail "could not seed the fleet board"
+board_charted_ids() {
+  sed -n '/<script id="bearings-data" type="application\/json">/,/<\/script>/p' "$BOARD_HOME/.lavish/bearings-board.html" \
+    | sed '1d;$d' | jq -r '[.charted[].id] | join(",")'
+}
+[ "$(board_charted_ids)" = board-seed ] || fail "the seed board does not carry the seeded row"
+PATH="$FAKEBIN:$PATH" \
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$BOARD_HOME" \
+  FM_POLL=1 FM_BOARD_REFRESH_INTERVAL=1 FM_HOME_SUMMARY_INTERVAL=9999999 FM_SIGNAL_GRACE=0 \
+  FM_CHECK_INTERVAL=9999999 FM_HEARTBEAT=9999999 \
+  "$WATCH" > "$TMP_ROOT/board-watch.out" 2> "$TMP_ROOT/board-watch.err" &
+WATCH_PID=$!
+i=0
+while [ ! -e "$BOARD_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 100 ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null || break
+  sleep 0.05
+  i=$((i + 1))
+done
+[ -e "$BOARD_HOME/state/.last-watcher-beat" ] \
+  || fail "the board watcher did not complete its initial cycle"
+python3 - "$BOARD_HOME/data/backlog.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+path.write_text(text.replace("\n## Done", "- [ ] board-task - Filed with no status signal (repo: firstmate) (kind: ship) (since 2026-08-02)\n\n## Done", 1))
+PY
+i=0
+while [ "$(board_charted_ids)" != "board-task,board-seed" ]; do
+  kill -0 "$WATCH_PID" 2>/dev/null \
+    || fail "the board watcher exited before republishing the backlog-only change: $(cat "$TMP_ROOT/board-watch.err")"
+  [ "$i" -lt 300 ] \
+    || fail "a backlog-only change did not reach the fleet board within the configured watcher cadence: $(board_charted_ids)"
+  sleep 0.1
+  i=$((i + 1))
+done
+kill "$WATCH_PID" >/dev/null 2>&1 || true
+wait "$WATCH_PID" >/dev/null 2>&1 || true
+WATCH_PID=
+[ -s "$BOARD_HOME/state/.bearings-board-digest" ] || fail "the watcher-driven refresh recorded no digest"
+[ ! -s "$LAVISH_CALL_LOG" ] || fail "the watcher-driven refresh called lavish-axi: $(cat "$LAVISH_CALL_LOG")"
+[ ! -e "$BOARD_HOME/state/.bearings-board-refresh.log" ] \
+  || fail "the watcher-driven refresh logged a failure: $(cat "$BOARD_HOME/state/.bearings-board-refresh.log")"
+unset LAVISH_CALL_LOG
+pass "live watcher cadence re-derives the fleet board on backlog-only change without Lavish"
 
 # Consumer boundary: first serialize behind any watcher-started publication,
 # then replace the ledger with a structurally complete but semantically false

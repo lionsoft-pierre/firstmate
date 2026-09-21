@@ -103,6 +103,7 @@ state/               runtime records and signals; gitignored
   public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, results staged for an owning home on another machine, accepted/rejected ledgers, and retirement receipts (AGENTS.md section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   .startup-network.*  status, report, per-step elapsed timings, inline-print claim, and lock for the deferred startup stage that runs network checks and the inactive-outcome scan off the digest's blocking path; bin/fm-startup-network.sh
+  .bearings-board-digest .bearings-board-refresh.log .bearings-board-refresh.lock  live fleet-board refresh records: the last published payload digest whose mtime paces the watcher's refresh, the bounded best-effort failure log, and the single-flight lock; bin/fm-bearings-board.sh owns them (docs/configuration.md "Live fleet board")
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
   .<id>.open-decisions-cursor  per-task byte cursor and folded open-decision set bounding the OPEN DECISIONS scan's cost to new status-log appends; written only by fm-classify-lib.sh's status_open_decisions_incremental, removed by teardown, safe to delete (forces one full re-fold)
@@ -491,6 +492,15 @@ The optional local, gitignored `config/lavish-axi-host` contains one non-empty a
 When the file is absent, worker launches do not add a board address and retain the existing ambient-environment behavior.
 Malformed or unreadable values refuse the launch before the worker starts, while the adapter refuses the same malformed value before polling.
 The address selects the existing shared server; it does not authorize starting or stopping the server, and the Lavish startup crash remains a vendor-tool concern.
+
+## Live fleet board
+
+The `/bearings lavish` board at `$FM_HOME/.lavish/bearings-board.html` is a live, model-free surface: `bin/fm-bearings-snapshot.sh --board` derives its `fm-bearings-board.v1` payload mechanically from the fleet snapshot, `bin/fm-bearings-board.sh` publishes it into the tracked template, and the same script's `refresh` re-derives it and rewrites the file only when the derived payload changed.
+The board file is the captain's opt-in: `refresh` refuses in a home that never opened the board, so nothing is generated there.
+The watcher runs that refresh as a detached best-effort child on `FM_BOARD_REFRESH_INTERVAL` and on every coalesced status signal, exactly as it publishes `state/home-summary.json`; session start, spawn, teardown, `bin/fm-pr-check.sh`, and every `bin/fm-captain-hold.sh` hold, answer, and reconcile outcome call the same refresh, so the board follows the changes the watcher cannot see.
+Lavish watches the board file and reloads an open page on its own, and a refresh never calls `lavish-axi`, never binds or arms the answer source, and never reopens a session the captain ended; only `/bearings lavish` (`build`) does that.
+The payload digest, `generated` stamp excluded, lives in `state/.bearings-board-digest`, whose mtime is the last-attempt stamp the cadence reads; best-effort failures append to the bounded `state/.bearings-board-refresh.log`.
+The answer path is unchanged: the captain's choice on the board reaches `bin/fm-captain-hold.sh`'s keyed-answer intake through the armed process-event source, and the choices a decision card offers are the `--option` values recorded on the hold itself.
 
 ## Home brief include (config/brief-include.md)
 
@@ -1213,6 +1223,9 @@ FM_HOME_SUMMARY_INTERVAL=300   # seconds before a live watcher refreshes this ho
 FM_HOME_SUMMARY_TIMEOUT=60     # seconds bounding the complete best-effort home-summary refresh, including lock acquisition, validation, atomic publication, and worker-side failure logging; invalid or zero values use 60
 FM_HOME_SUMMARY_ERROR_LOG_MAX_BYTES=65536   # approximate size cap for state/.home-summary-refresh.log before it is trimmed to the newest 200 lines; invalid or zero values use 65536
 FM_HOME_SUMMARY_FAILURE_REPORT=2   # recorded publication failures since the ledger's own last publication before session start reports a HOME_SUMMARY line; invalid or zero values use 2
+FM_BOARD_REFRESH_INTERVAL=60   # seconds before a live watcher re-derives this home's published fleet board even without a status signal; invalid or zero values use 60 (see "Live fleet board")
+FM_BOARD_REFRESH_TIMEOUT=60    # seconds bounding one board payload generation inside bin/fm-bearings-board.sh refresh; invalid or zero values use 60
+FM_BOARD_REFRESH_LOG_MAX_BYTES=65536   # approximate size cap for state/.bearings-board-refresh.log before it is trimmed to the newest 200 lines; invalid or zero values use 65536
 FM_SNAPSHOT_CREW_STATE_TIMEOUT=10   # seconds bounding each local per-task current-state read inside bin/fm-fleet-snapshot.sh; remote endpoint liveness is not probed on the snapshot path
 FM_SNAPSHOT_LOCAL_READ_CONCURRENCY=8   # maximum local tasks whose current-state and endpoint observations are collected concurrently during snapshot composition
 FM_SNAPSHOT_BUDGET=5                # one total seconds budget for all concurrent remote home-ledger reads

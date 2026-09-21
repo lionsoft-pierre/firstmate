@@ -228,6 +228,88 @@ test_charted_rows_without_a_filed_date_follow_the_dated_rows_in_payload_order() 
   pass "charted rows with no filed date follow the dated rows in payload order"
 }
 
+# Build the board from a complete payload override and return what the renderer
+# produced, optionally after applying the page's own repo filter.
+render_payload() {  # <home> <payload-fields-json> [repo-filter]
+  local home=$1 fields=$2 filter=${3:-} data="$1/payload.json"
+  jq -n --argjson fields "$fields" '{
+    schema:"fm-bearings-board.v1", home:"render-home", generated:"2026-08-26T00:00Z",
+    prs_live:false, captains_call:[], underway:[], landed:[], charted:[]} + $fields' > "$data"
+  PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$BOARD" build "$data" >/dev/null || fail "the board did not build"
+  if [ -n "$filter" ]; then
+    node "$HARNESS" "$home/.lavish/bearings-board.html" "$filter" \
+      || fail "the built board could not be rendered with a repo filter"
+  else
+    node "$HARNESS" "$home/.lavish/bearings-board.html" \
+      || fail "the built board could not be rendered"
+  fi
+}
+
+TWO_REPO_PAYLOAD='{
+  "captains_call":[
+    {"key":"alpha-call","type":"decision","repo":"alpha","title":"Alpha call","options":[{"value":"yes","label":"Yes"}]},
+    {"key":"beta-call","type":"decision","repo":"beta","title":"Beta call","options":[{"value":"yes","label":"Yes"}]}
+  ],
+  "underway":[
+    {"id":"alpha-work","repo":"alpha","name":"Alpha work","state":"working","kind":"ship","doing":"building"},
+    {"id":"beta-work","repo":"beta","name":"Beta work","state":"working","kind":"ship","doing":"building"}
+  ],
+  "landed":[{"id":"alpha-done","repo":"alpha","what":"Alpha landed","owner":"(main)"}],
+  "charted":[
+    {"id":"beta-queued","repo":"beta","title":"Beta queued","reason":"","dispatchable":true},
+    {"id":"alpha-queued","repo":"alpha","title":"Alpha queued","reason":"","dispatchable":true},
+    {"id":"main-inventory","repo":null,"title":"Main inventory integrity","reason":"main inventory","dispatchable":false,"kind":"warning"}
+  ]
+}'
+
+test_repo_chips_narrow_every_section_and_the_stat_strip() {
+  local home out
+  home=$(make_home repo-filter)
+  out=$(render_payload "$home" "$TWO_REPO_PAYLOAD")
+  printf '%s' "$out" | jq -e '
+    .error == ""
+      and .repos == ["all repos", "alpha", "beta"]
+      and ([.stats[] | .n] == [2, 2, 1, 2])
+      and all(.calls[]; .hidden == false)
+      and all(.underway[], .landed[], .charted[]; .hidden == false)
+  ' >/dev/null || fail "the unfiltered two-repo board did not render every row with chips: $out"
+  out=$(render_payload "$home" "$TWO_REPO_PAYLOAD" alpha)
+  printf '%s' "$out" | jq -e '
+    .error == ""
+      and ([.stats[] | .n] == [1, 1, 1, 1])
+      and ([.calls[] | select(.hidden == false) | .title] == ["Alpha call"])
+      and ([.underway[] | select(.hidden == false) | .title] == ["Alpha work"])
+      and ([.landed[] | select(.hidden == false) | .title] == ["Alpha landed"])
+      and ([.charted[] | select(.hidden == false) | .title] == ["Alpha queued", "Main inventory integrity"])
+      and ([.charted[] | select(.hidden == true) | .title] == ["Beta queued"])
+  ' >/dev/null || fail "filtering to alpha did not hide beta everywhere and recount the strip: $out"
+  pass "repo chips narrow the cards, every row list, and the stat strip to one repo, and never hide a fleet-wide repair warning"
+}
+
+test_a_single_repo_board_shows_no_chips() {
+  local home out
+  home=$(make_home single-repo)
+  out=$(render_payload "$home" '{
+    "underway":[{"id":"one","repo":"sample","name":"One","state":"working","kind":"ship","doing":"building"}],
+    "charted":[{"id":"two","repo":"sample","title":"Two","reason":"","dispatchable":true}]
+  }')
+  printf '%s' "$out" | jq -e '.error == "" and .repos == [] and ([.stats[] | .n] == [0, 1, 0, 1])' >/dev/null \
+    || fail "a single-repo board grew a chip row or lost its counts: $out"
+  pass "a single-repo board shows no repo chips"
+}
+
+test_the_footer_states_the_data_age() {
+  local home out
+  home=$(make_home data-age)
+  out=$(render_payload "$home" '{}')
+  printf '%s' "$out" | jq -e '.age | startswith("data as of 00:00:00 UTC · ") and endswith(" ago")' >/dev/null \
+    || fail "the footer did not restate the generated stamp as a data age: $out"
+  pass "the footer states when the data was generated and how old it is"
+}
+
 test_an_underway_row_leads_with_the_task_name_and_keeps_its_run_status
 test_an_underway_identifier_label_is_not_replaced_by_run_status
 test_charted_next_reads_newest_filed_first
@@ -237,3 +319,6 @@ test_warnings_are_excluded_from_the_charted_next_count
 test_a_board_of_only_warnings_still_reports_nothing_queued
 test_omitted_warnings_never_count_as_more_queued
 test_an_omitted_kind_keeps_the_existing_queued_rendering
+test_repo_chips_narrow_every_section_and_the_stat_strip
+test_a_single_repo_board_shows_no_chips
+test_the_footer_states_the_data_age

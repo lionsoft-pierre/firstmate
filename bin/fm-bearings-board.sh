@@ -1,28 +1,35 @@
 #!/usr/bin/env bash
-# fm-bearings-board.sh - build and arm the /bearings lavish fleet board.
+# fm-bearings-board.sh - publish, serve, and refresh the /bearings lavish fleet board.
 #
-# The board is the captain-facing interactive surface of /bearings lavish: the
-# shipped template (.agents/skills/bearings/assets/board-template.html) plus one
-# injected fm-bearings-board.v1 JSON payload. This script owns the mechanics so
-# the invoking agent's per-run work stays "compose the JSON, run build" - the
-# agent never authors board UI at invocation time.
+# The board is the captain-facing interactive surface of the fleet: the shipped
+# template (.agents/skills/bearings/assets/board-template.html) plus one injected
+# fm-bearings-board.v1 JSON payload (contract: bin/fm-bearings-board-lib.sh).
+# The payload is machine-derived by `bin/fm-bearings-snapshot.sh --board`, so no
+# agent composes board copy at any point; this script owns the mechanics around
+# that seam.
 #
 # Usage:
-#   fm-bearings-board.sh build <data.json>
+#   fm-bearings-board.sh build [<data.json>]
+#   fm-bearings-board.sh publish <data.json>
+#   fm-bearings-board.sh serve
+#   fm-bearings-board.sh refresh [--best-effort]
 #   fm-bearings-board.sh path
 #
-# build      Validate the payload, drop the Captain's Call cards whose subject
+# publish    Validate the payload, drop the Captain's Call cards whose subject
 #            already landed, give every surviving decision card the standard
 #            reconcile choice, and inject the result into a fresh copy of the
-#            shipped template at the stable board path. Establish the Lavish
-#            session on that board and PROVE it is live BEFORE binding and
-#            arming its answer source, so a registered poll can never race a
-#            session that does not exist or attach to one that has ended.
-#            Bind to the keyed-answer intake (bin/fm-captain-hold.sh) ALWAYS
-#            precedes arm, so the board can never produce an answer that has
-#            nowhere to go (captain-hold-lifecycle's ordering rule, enforced
-#            here rather than left to agent memory). Output starts with
-#            `board: <path>`, then includes lavish-axi's session output and
+#            shipped template at the stable board path, atomically. Prints
+#            `board: <path>`. Never calls lavish-axi and never touches the
+#            answer source: publishing is a file write, and a Lavish session
+#            already open on that path reloads it on its own.
+# serve      Establish the Lavish session on the published board and PROVE it
+#            is live BEFORE binding and arming its answer source, so a
+#            registered poll can never race a session that does not exist or
+#            attach to one that has ended. Bind to the keyed-answer intake
+#            (bin/fm-captain-hold.sh) ALWAYS precedes arm, so the board can
+#            never produce an answer that has nowhere to go
+#            (captain-hold-lifecycle's ordering rule, enforced here rather than
+#            left to agent memory). Output is lavish-axi's session output and
 #            the remaining status:
 #              session: live | reopened
 #              served: <path>
@@ -30,20 +37,38 @@
 #              armed: <source-id>            (first registration)
 #              already-armed: <source-id>    (registration already present)
 #              listening: <owner>            (only when a replacement was needed)
-#            Every dropped card is named on stderr as a `dropped-landed-card:`
-#            line, so a rebuild states what it removed instead of quietly
-#            shrinking Captain's Call.
+#            Refuses when no board is published.
+# build      publish then serve, the captain-facing entry point of /bearings
+#            lavish. With no payload argument it generates the payload itself
+#            through `fm-bearings-snapshot.sh --board`; an explicit payload is
+#            accepted for tests and diagnostics. Output starts with `board:`.
+# refresh    Re-derive the payload and republish the board ONLY when the derived
+#            payload changed (its `generated` stamp excluded), so an open page
+#            reloads on real fleet change and never on the clock. Prints
+#            `refreshed: <path>` or `unchanged: <digest>`. Refuses (exit 3)
+#            when no board is published, because the board file is the
+#            captain's opt-in; never calls lavish-axi, never binds or arms, and
+#            never reopens a session the captain ended - `/bearings lavish`
+#            (build) is the deliberate reopen. A concurrent refresh yields
+#            (`busy:`) rather than racing. With --best-effort every failure,
+#            including the missing board, is recorded in the bounded
+#            state/.bearings-board-refresh.log and the exit status is 0, so the
+#            watcher, session start, spawn, teardown, PR check, and captain-hold
+#            call sites can never change their own result by calling it. The
+#            generation is bounded by FM_BOARD_REFRESH_TIMEOUT (default 60 s).
+#            The digest lives in state/.bearings-board-digest; its mtime is the
+#            last-attempt stamp bin/fm-watch.sh's refresh cadence reads.
 # path       Print the stable board path for this home.
 #
 # A LIVE SESSION IS PROVED, NEVER ASSUMED. `lavish-axi <file>` exits 0 even
 # when it refuses to reopen a session the captain ended from the browser,
 # reporting `status: user-ended` with the same session id, so exit status alone
-# cannot tell a live board from a dead one. build requires the server's fresh
+# cannot tell a live board from a dead one. serve requires the server's fresh
 # session listing to show the canonical board open and refuses rather than
 # arming an ended session. After a reopen it retires the pre-reopen source
 # generation through the guarded adapter path, arms a fresh registration, and
 # accepts only the replacement listener as live. A registered board with no
-# live owner also gets a replacement before build returns, because
+# live owner also gets a replacement before serve returns, because
 # `already-armed` is not the same fact as `listening`.
 #
 # CAPTAIN'S CALL HYGIENE. A decision card is dropped when its work item, PR, or
@@ -52,37 +77,29 @@
 # open captain call. A newer published version also supersedes a version card.
 # A task whose state cannot be established is kept, because a call wrongly
 # hidden is worse than a card wrongly shown. Cleanup is therefore a normal
-# rebuild effect rather than a committed migration or direct state mutation.
+# publish effect rather than a committed migration or direct state mutation.
+# refresh skips the per-card open probe: its payload was derived a moment
+# earlier from the very backlog that probe reads, and the probe costs one
+# tasks-axi read per card on every cadence tick.
 #
 # THE RECONCILE CHOICE. Every decision card carries the standard `reconcile`
-# option, injected here so the guarantee does not depend on the composer's
-# memory, and the payload validator reserves that value across every card type.
-# The validator's reservation scope must equal the adapter's reconcile
+# option, injected here so the guarantee does not depend on the generator, and
+# the payload validator reserves that value across every card type. The
+# validator's reservation scope must equal the adapter's reconcile
 # classification scope, which is all card types because the captured payload
 # carries no card type. Its meaning, and the reason it can never reach the
 # keyed-answer intake as a blind close, are owned by
 # docs/captain-hold-lifecycle.md.
 #
-# Validation is fail-closed: the payload must be valid JSON with
-# schema=fm-bearings-board.v1 and every renderer-consumed field must satisfy
-# the fm-bearings-board.v1 types and item invariants below. Every fleet row and
-# Captain's Call item explicitly carries `repo`; the composer fills it from the
-# snapshot and task records wherever known, and uses null or an empty string
-# only as the deliberate genuinely-no-repo marker. In that exceptional case
-# the template may display the routing id. Anything else refuses before the
-# existing board is touched.
-#
-# Every Underway row likewise carries a non-empty `name`: the durable task name
-# when known, otherwise its durable identifier.
-# A Charted Next row MAY carry `filed`, the durable filed date (YYYY-MM-DD, or
-# that date with a UTC timestamp) the template orders the section by, newest
-# first; a row with no comparable date keeps its payload order after every dated
-# row. Anything else in that field refuses rather than sorting on garbage.
+# Validation is fail-closed on every publish: the payload must be valid JSON
+# with schema=fm-bearings-board.v1 and every renderer-consumed field must
+# satisfy the contract bin/fm-bearings-board-lib.sh owns. Anything else refuses
+# before the existing board is touched.
 #
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
-# re-invocation rebuilds the same file in place, which keeps the same Lavish
+# republish rewrites the same file in place, which keeps the same Lavish
 # session URL and the same canonical process-event source id. Injection escapes
-# every `<` in the compact JSON as the \u003c string escape, so a payload string
+# every `<` in the compact JSON as the < string escape, so a payload string
 # containing "</script>" can never terminate the data block early.
 #
 # FM_BEARINGS_BOARD_TEMPLATE overrides the shipped template path (tests only).
@@ -91,6 +108,16 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# shellcheck source=bin/fm-bearings-board-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-bearings-board-lib.sh"  # fm_bearings_board_validate: the payload contract
+# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the shared hard bound
+# shellcheck source=bin/fm-wake-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-wake-lib.sh"  # fm_lock_try_acquire / fm_lock_release
 
 TEMPLATE="${FM_BEARINGS_BOARD_TEMPLATE:-$SCRIPT_DIR/../.agents/skills/bearings/assets/board-template.html}"
 PLACEHOLDER='__FM_BEARINGS_BOARD_DATA__'
@@ -104,7 +131,14 @@ usage() {
   ' "$0"
 }
 
+# Under a best-effort refresh a failure is recorded in the bounded refresh log
+# and the exit status stays 0, so no call site's own result depends on it.
+BEST_EFFORT=0
 fail() {
+  if [ "$BEST_EFFORT" -eq 1 ]; then
+    refresh_log_failure "$*"
+    exit 0
+  fi
   printf 'fm-bearings-board: %s\n' "$*" >&2
   exit 1
 }
@@ -112,96 +146,7 @@ fail() {
 board_path() { printf '%s/.lavish/bearings-board.html\n' "$FM_HOME"; }
 
 validate_payload() {  # <data.json>
-  jq -e --arg schema "$BOARD_SCHEMA" '
-    def nonempty_string: type == "string" and length > 0;
-    def slug($max): type == "string" and test("^[A-Za-z0-9._-]{1," + ($max | tostring) + "}$");
-    def repo_marker: has("repo") and (.repo == null or (.repo | type == "string"));
-    def name_marker: has("name") and (.name | nonempty_string);
-    def valid_filed:
-      . as $filed
-      | type == "string"
-      and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$")
-      and (if test("T")
-        then try ((fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) == $filed) catch false
-        else try (((. + "T00:00:00Z") | fromdateiso8601 | strftime("%Y-%m-%d")) == $filed) catch false
-        end);
-    def optional_filed:
-      (has("filed") | not) or (.filed == null) or (.filed | valid_filed);
-    def optional_string($name): (has($name) | not) or (.[$name] | type == "string");
-    def optional_https_url($name):
-      (has($name) | not)
-      or (.[$name]
-        | type == "string"
-          and test("^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:[/?#][^[:space:]]*)?$"));
-    def version: type == "string" and test("^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$");
-    def optional_subject:
-      (has("subject") | not)
-      or (.subject
-        | type == "object"
-          and (keys | sort) == ["artifact", "version"]
-          and (.artifact | slug(128))
-          and (.version | version));
-    def call_item:
-      type == "object"
-      and (.key | slug(128))
-      and (.type == "decision" or .type == "merge" or .type == "credential")
-      and repo_marker
-      and (.title | nonempty_string)
-      and (.options | type == "array")
-      and ((.options | length) > 0 or .allow_freeform == true)
-      and ([.options[]
-        | type == "object"
-          and (.value | slug(128))
-          and (.label | nonempty_string)
-          and optional_string("hint")] | all)
-      and (optional_string("about"))
-      and (optional_string("decide"))
-      and (optional_string("detail"))
-      and (optional_https_url("pr_url"))
-      and optional_subject
-      and (if has("subject") then .type == "decision" else true end)
-      and (optional_string("freeform_hint"))
-      and ((has("close") | not) or (.close == "done" or .close == "release"))
-      and ((has("allow_freeform") | not) or (.allow_freeform | type == "boolean"))
-      and ((has("recommend_value") | not)
-        or ((.recommend_value | slug(128))
-          and (.recommend_value as $recommend
-            | ([.options[].value] | index($recommend) != null))))
-      and ([.options[].value] | index("reconcile") == null)
-      and (if .type == "merge" then (.risk | nonempty_string) else true end);
-    def underway_item:
-      type == "object" and repo_marker and name_marker and (.id | nonempty_string)
-      and (.state | nonempty_string) and (.doing | nonempty_string) and (.kind | nonempty_string);
-    def landed_item:
-      type == "object" and repo_marker and (.id | nonempty_string)
-      and (.what | nonempty_string) and (.owner | nonempty_string)
-      and optional_https_url("pr_url")
-      and optional_subject;
-    def charted_item:
-      type == "object" and repo_marker and (.id | slug(128))
-      and (.title | nonempty_string) and (.reason | type == "string")
-      and (.dispatchable | type == "boolean")
-      and ((has("kind") | not) or (.kind == "queued" or .kind == "warning"))
-      and optional_filed
-      and (if .kind == "warning" then .dispatchable == false else true end);
-    type == "object"
-    and (.schema == $schema)
-    and (.home | nonempty_string)
-    and (.generated | nonempty_string)
-    and (.prs_live | type == "boolean")
-    and (.captains_call | type == "array")
-    and (.underway | type == "array")
-    and (.landed | type == "array")
-    and (.charted | type == "array")
-    and ((has("charted_more") | not)
-      or ((.charted_more | type == "number") and (.charted_more >= 0) and (.charted_more | floor == .)))
-    and ((has("charted_warning_more") | not)
-      or ((.charted_warning_more | type == "number") and (.charted_warning_more >= 0) and (.charted_warning_more | floor == .)))
-    and ([.captains_call[] | call_item] | all)
-    and ([.underway[] | underway_item] | all)
-    and ([.landed[] | landed_item] | all)
-    and ([.charted[] | charted_item] | all)
-  ' "$1" >/dev/null
+  fm_bearings_board_validate "$1"
 }
 
 # --- Lavish session liveness -------------------------------------------------
@@ -278,6 +223,8 @@ decision_card_is_stale() {  # <task-id> <landed-0-or-1>
     printf 'structured subject already landed\n'
     return 0
   fi
+  # refresh derived this payload from the backlog a moment ago; see the header.
+  [ "${BOARD_STALE_PROBE:-1}" = 1 ] || return 1
   "$SCRIPT_DIR/fm-captain-hold.sh" open "$task" --distinguish-absent >/dev/null 2>&1 || rc=$?
   # 1 is a definite "no longer an open captain call". 2 is "cannot tell", 3 is
   # absent from this backlog, and a call wrongly hidden is worse than a card
@@ -357,9 +304,12 @@ await_source_owner() {  # <source-id>
   printf '%s\n' "${owner:-none}"
 }
 
-command_build() {
-  local data=${1-} board json tmp sid extracted effective owner version pre_reopen_owner
-  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+generate_payload() {  # <dest.json>
+  "$SCRIPT_DIR/fm-bearings-snapshot.sh" --board > "$1"
+}
+
+publish_board() {  # <data.json>
+  local data=$1 board json tmp extracted effective
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -f "$data" ] || fail "board data does not exist: $data"
   jq empty "$data" 2>/dev/null || fail "board data is not valid JSON: $data"
@@ -404,7 +354,12 @@ command_build() {
     fail "cannot publish the board"
   fi
   printf 'board: %s\n' "$board"
+}
 
+serve_board() {
+  local board sid owner version pre_reopen_owner
+  board=$(board_path)
+  [ -f "$board" ] && [ ! -L "$board" ] || fail "no board is published at $board; run build first"
   command -v lavish-axi >/dev/null 2>&1 || fail "lavish-axi is not installed"
   sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$board") \
     || fail "cannot derive the board source id"
@@ -451,8 +406,135 @@ command_build() {
   fi
 }
 
+GENERATED_PAYLOAD=
+cleanup_generated_payload() {
+  [ -z "$GENERATED_PAYLOAD" ] || rm -f -- "$GENERATED_PAYLOAD"
+}
+
+command_build() {
+  local data=${1-}
+  [ "$#" -le 1 ] || { usage >&2; exit 2; }
+  if [ -z "$data" ]; then
+    GENERATED_PAYLOAD=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-bearings-board-gen.XXXXXX") \
+      || fail "cannot stage the generated board payload"
+    trap cleanup_generated_payload EXIT
+    generate_payload "$GENERATED_PAYLOAD" || fail "cannot generate the board payload"
+    data=$GENERATED_PAYLOAD
+  fi
+  publish_board "$data"
+  serve_board
+}
+
+command_publish() {
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  publish_board "$1"
+}
+
+command_serve() {
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  serve_board
+}
+
+# --- refresh -----------------------------------------------------------------
+REFRESH_TIMEOUT=${FM_BOARD_REFRESH_TIMEOUT:-60}
+case "$REFRESH_TIMEOUT" in ''|*[!0-9]*|0) REFRESH_TIMEOUT=60 ;; esac
+REFRESH_LOG_MAX_BYTES=${FM_BOARD_REFRESH_LOG_MAX_BYTES:-65536}
+case "$REFRESH_LOG_MAX_BYTES" in ''|*[!0-9]*|0) REFRESH_LOG_MAX_BYTES=65536 ;; esac
+REFRESH_DIGEST="$STATE/.bearings-board-digest"
+REFRESH_LOG="$STATE/.bearings-board-refresh.log"
+REFRESH_LOCK="$STATE/.bearings-board-refresh.lock"
+REFRESH_LOCK_HELD=0
+REFRESH_TMP=
+
+refresh_log_failure() {  # <message>
+  local size tmp
+  if ! printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$REFRESH_LOG" 2>/dev/null; then
+    printf 'fm-bearings-board: %s\n' "$1" >&2
+    return 0
+  fi
+  size=$(wc -c < "$REFRESH_LOG" 2>/dev/null | tr -d '[:space:]')
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$size" -ge "$REFRESH_LOG_MAX_BYTES" ]; then
+    tmp="$REFRESH_LOG.tmp.${BASHPID:-$$}"
+    tail -n 200 "$REFRESH_LOG" > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$REFRESH_LOG" 2>/dev/null
+    rm -f -- "$tmp" 2>/dev/null || true
+  fi
+}
+
+refresh_cleanup() {
+  [ -z "$REFRESH_TMP" ] || rm -f -- "$REFRESH_TMP" "$REFRESH_TMP.err" 2>/dev/null || true
+  if [ "$REFRESH_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$REFRESH_LOCK" || true
+    REFRESH_LOCK_HELD=0
+  fi
+}
+
+payload_digest() {  # <payload.json>; the generated stamp is not a change
+  local canonical
+  canonical=$(jq -S 'del(.generated)' "$1") || return 1
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s\n' "$canonical" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s\n' "$canonical" | sha256sum | awk '{print $1}'
+  fi
+}
+
+command_refresh() {
+  local best_effort=0 arg board digest previous rc tmp
+  for arg in "$@"; do
+    case "$arg" in
+      --best-effort) best_effort=1 ;;
+      *) usage >&2; exit 2 ;;
+    esac
+  done
+  board=$(board_path)
+  if [ ! -f "$board" ] || [ -L "$board" ]; then
+    [ "$best_effort" -eq 0 ] || exit 0
+    printf 'fm-bearings-board: no board is published for this home; run build first\n' >&2
+    exit 3
+  fi
+  # From here every failure is a refresh failure: logged and swallowed under
+  # --best-effort, reported otherwise.
+  BEST_EFFORT=$best_effort
+  mkdir -p "$STATE" 2>/dev/null || fail "state directory is unavailable: $STATE"
+  trap refresh_cleanup EXIT
+  if ! fm_lock_try_acquire "$REFRESH_LOCK"; then
+    printf 'busy: another refresh holds %s\n' "$REFRESH_LOCK"
+    exit 0
+  fi
+  REFRESH_LOCK_HELD=1
+  REFRESH_TMP=$(umask 077; mktemp "$STATE/.bearings-board-payload.XXXXXX") \
+    || fail "cannot stage the refreshed board payload"
+  rc=0
+  fm_run_timed "$REFRESH_TIMEOUT" "$SCRIPT_DIR/fm-bearings-snapshot.sh" --board \
+    > "$REFRESH_TMP" 2> "$REFRESH_TMP.err" || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    fail "board payload generation exceeded its ${REFRESH_TIMEOUT}-second deadline"
+  elif [ "$rc" -ne 0 ]; then
+    fail "board payload generation failed with exit $rc: $(tail -n 1 "$REFRESH_TMP.err" 2>/dev/null | cut -c1-500)"
+  fi
+  digest=$(payload_digest "$REFRESH_TMP") || fail "cannot digest the refreshed board payload"
+  previous=$(cat "$REFRESH_DIGEST" 2>/dev/null || true)
+  if [ "$digest" = "$previous" ]; then
+    touch "$REFRESH_DIGEST" 2>/dev/null || true
+    printf 'unchanged: %s\n' "$digest"
+    exit 0
+  fi
+  BOARD_STALE_PROBE=0 publish_board "$REFRESH_TMP" >/dev/null
+  tmp=$(umask 077; mktemp "$STATE/.bearings-board-digest.XXXXXX") \
+    || fail "cannot stage the board digest"
+  if ! { printf '%s\n' "$digest" > "$tmp" && mv -f -- "$tmp" "$REFRESH_DIGEST"; }; then
+    rm -f -- "$tmp"
+    fail "cannot record the board digest"
+  fi
+  printf 'refreshed: %s\n' "$board"
+}
+
 case "${1-}" in
   build) shift; command_build "$@" ;;
+  publish) shift; command_publish "$@" ;;
+  serve) shift; command_serve "$@" ;;
+  refresh) shift; command_refresh "$@" ;;
   path) board_path ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;

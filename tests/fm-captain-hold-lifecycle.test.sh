@@ -4001,6 +4001,58 @@ test_answer_records_and_closes
 test_release_frees_held_work
 test_hold_stamp_precedes_hold_visibility
 test_interrupted_answer_preserves_hold_age
+# The answers a captain can pick are part of the hold record, so the model-free
+# board generator cards the call with those exact choices.
+test_hold_options_are_recorded_and_carded() {
+  local home out rc
+  home=$(make_home hold-options)
+  (cd "$home" && tasks-axi add work-call "Ship the cutover" --kind ship --repo sample) >/dev/null 2>&1 \
+    || fail "could not seed the gated work item"
+  run_captain "$home" hold work-call --reason "captain window choice pending" \
+    --option now="Cut over now" --option friday="Wait for Friday" --recommend friday >/dev/null \
+    || fail "a hold with options was refused"
+  run_captain "$home" hold question-call --title "Approve the naming" --reason "captain naming call pending" \
+    --repo sample >/dev/null || fail "a hold without options was refused"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" "$BEARINGS" --board) \
+    || fail "the board projection failed: $out"
+  printf '%s' "$out" | jq -e '
+    (.captains_call[] | select(.key == "work-call")
+      | .type == "decision" and .title == "Ship the cutover" and .repo == "sample"
+        and .about == "captain window choice pending"
+        and ([.options[] | .value + "=" + .label] == ["now=Cut over now", "friday=Wait for Friday"])
+        and .recommend_value == "friday" and .close == "release" and .allow_freeform == true)
+    and (.captains_call[] | select(.key == "question-call")
+      | (.options | length) == 0 and .allow_freeform == true and (has("close") | not)
+        and .about == "captain naming call pending")
+  ' >/dev/null || fail "the board did not card the holds from their recorded options: $out"
+  run_captain "$home" hold work-call --reason "captain window choice pending" --option later="Next week" >/dev/null \
+    || fail "a re-hold with new options was refused"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" "$BEARINGS" --board)
+  printf '%s' "$out" | jq -e '
+    .captains_call[] | select(.key == "work-call")
+      | ([.options[].value] == ["later"]) and (has("recommend_value") | not)
+  ' >/dev/null || fail "a re-hold with new options did not replace the previous ones: $out"
+  run_captain "$home" hold work-call --reason "captain window choice pending" >/dev/null \
+    || fail "a re-hold without options was refused"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" "$BEARINGS" --board)
+  printf '%s' "$out" | jq -e '.captains_call[] | select(.key == "work-call") | [.options[].value] == ["later"]' \
+    >/dev/null || fail "a re-hold without options dropped the recorded ones: $out"
+  for bad in "--option reconcile" "--option a --option a" "--option a --recommend b" "--recommend a" "--option bad-value=" "--option bad value"; do
+    set +e
+    # shellcheck disable=SC2086
+    run_captain "$home" hold refused-call --title "Refused" --reason "captain refusal fixture" --repo sample $bad >/dev/null 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "hold accepted invalid options: $bad"
+  done
+  (cd "$home" && tasks-axi show refused-call) >/dev/null 2>&1 \
+    && fail "a refused hold still created its task"
+  pass "hold records the captain's choices, replaces them on re-hold, and refuses invalid ones"
+}
+
 test_deferral_leaves_captains_call_until_due
 test_out_of_band_close_is_recordable
 test_visual_review_uses_shared_completion_owner
@@ -4046,3 +4098,4 @@ test_verify_names_the_unresolvable_legacy_id_once
 test_verify_resolves_a_pre_collapse_key_through_its_derived_marker
 test_captain_hold_mutations_address_the_beads_backend
 test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
+test_hold_options_are_recorded_and_carded

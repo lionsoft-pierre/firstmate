@@ -134,6 +134,18 @@ a { color: inherit; text-decoration: none; }
 .bb-brand__disc svg { width: 60%; height: 60%; }
 .bb-brand__wm { font-family: var(--font-display); font-size: 23px; color: var(--text-strong); line-height: 1; }
 .bb-meta-mono { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; }
+.bb-age { margin-left: auto; }
+/* the repo filter hides rows with the hidden attribute; flex rows would
+   otherwise outrank the user agent's display rule for it */
+.bb-row[hidden] { display: none; }
+/* repo filter chips: one per repo the payload named, plus all */
+.bb-repos { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.bb-repo {
+  font-family: var(--font-mono); font-size: var(--fs-xs); letter-spacing: .04em;
+  padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--paper-000); color: var(--ink-900);
+}
+.bb-repo.is-active { background: var(--navy-700); color: var(--paper-000); border-color: var(--navy-700); }
 
 .bb-main {
   max-width: var(--container-app); margin: 0 auto;
@@ -295,6 +307,7 @@ a { color: inherit; text-decoration: none; }
 <main class="bb-main">
 
   <div class="bb-stats" id="bb-stats"></div>
+  <div class="bb-repos" id="bb-repos" hidden></div>
 
   <div class="bb-cols">
   <section class="bb-section">
@@ -367,6 +380,7 @@ a { color: inherit; text-decoration: none; }
 
   <footer class="bb-foot">
     <span class="bb-meta-mono" id="bb-provenance">-</span>
+    <span class="bb-meta-mono bb-age" id="bb-age">-</span>
   </footer>
 
 </main>
@@ -457,23 +471,41 @@ __FM_BEARINGS_BOARD_DATA__
 
   document.getElementById("bb-provenance").textContent = data.schema + " · " + data.generated;
 
-  /* stat strip */
-  var callTotal = data.captains_call.length;
-  var stats = [
-    { n: callTotal, l: "need you", call: true },
-    { n: data.underway.length, l: "underway" },
-    { n: data.landed.length, l: "landed recently" },
-    { n: chartedQueued(data.charted).length + chartedMoreQueued, l: "charted next" }
-  ];
+  /* repo filter registry: every card and row registers with the repo the
+     payload named it under, so one chip row can narrow the whole board */
+  var filterables = [];
+  var activeRepo = "";
+  function registerRepo(node, item, section) {
+    filterables.push({ node: node, repo: (item && item.repo) ? String(item.repo) : "", section: section });
+  }
+  /* a repair warning with no repo is fleet-wide and stays visible under any filter */
+  function matchesRepo(f) {
+    return !activeRepo || f.repo === activeRepo || (f.section === "charted-warning" && !f.repo);
+  }
+  function visibleIn(section) {
+    return filterables.filter(function (f) { return f.section === section && matchesRepo(f); }).length;
+  }
+
+  /* stat strip: recomputed whenever the repo filter changes */
   var strip = document.getElementById("bb-stats");
-  stats.forEach(function (s) {
-    var t = el("div", "bb-stat" + (s.call ? " bb-stat--call" : ""));
-    t.appendChild(el("span", "bb-stat__num", String(s.n)));
-    t.appendChild(el("span", "bb-stat__label", s.l));
-    strip.appendChild(t);
-  });
-  document.getElementById("bb-call-sub").textContent =
-    callTotal ? callTotal + " item" + (callTotal === 1 ? "" : "s") + " wait on you, captain" : "nothing needs you, captain";
+  function renderStats() {
+    var callTotal = visibleIn("call");
+    var stats = [
+      { n: callTotal, l: "need you", call: true },
+      { n: visibleIn("underway"), l: "underway" },
+      { n: visibleIn("landed"), l: "landed recently" },
+      { n: visibleIn("charted") + (activeRepo ? 0 : chartedMoreQueued), l: "charted next" }
+    ];
+    strip.textContent = "";
+    stats.forEach(function (s) {
+      var t = el("div", "bb-stat" + (s.call ? " bb-stat--call" : ""));
+      t.appendChild(el("span", "bb-stat__num", String(s.n)));
+      t.appendChild(el("span", "bb-stat__label", s.l));
+      strip.appendChild(t);
+    });
+    document.getElementById("bb-call-sub").textContent =
+      callTotal ? callTotal + " item" + (callTotal === 1 ? "" : "s") + " wait on you, captain" : "nothing needs you, captain";
+  }
 
   /* Captain's Call deck: every item renders as the same full card */
   var deck = document.getElementById("bb-call");
@@ -486,6 +518,7 @@ __FM_BEARINGS_BOARD_DATA__
 
   data.captains_call.forEach(function (item) {
     var card = el("div", "fm-card fm-card--poster bb-decision");
+    registerRepo(card, item, "call");
     var pad = el("div", "bb-decision__pad");
 
     var top = el("div", "bb-decision__top");
@@ -593,13 +626,23 @@ __FM_BEARINGS_BOARD_DATA__
   });
 
   /* stack navigation: one card at a time, dealt off the pile */
-  var cards = Array.prototype.slice.call(deck.children);
+  var allCards = Array.prototype.slice.call(deck.children);
+  var cards = allCards;
   var active = 0;
   var stackCount = document.getElementById("bb-stack-count");
   var stackPrev = document.getElementById("bb-stack-prev");
   var stackNext = document.getElementById("bb-stack-next");
   var stackNav = stackCount.parentNode;
   function showCard(i) {
+    /* the repo filter marks cards it hides; the deal skips them */
+    cards = allCards.filter(function (c) { return !c.fmFiltered; });
+    allCards.forEach(function (c) { if (c.fmFiltered) c.hidden = true; });
+    if (!cards.length) {
+      stackCount.textContent = allCards.length ? "no card in this repo" : "-";
+      stackPrev.disabled = true;
+      stackNext.disabled = true;
+      return;
+    }
     active = Math.max(0, Math.min(cards.length - 1, i));
     cards.forEach(function (c, j) { c.hidden = j !== active; });
     var answered = deck.querySelectorAll(".is-queued").length;
@@ -626,6 +669,7 @@ __FM_BEARINGS_BOARD_DATA__
   if (!data.underway.length) uw.appendChild(el("div", "bb-empty", "Nothing is underway."));
   data.underway.forEach(function (t) {
     var row = el("div", "bb-row");
+    registerRepo(row, t, "underway");
     row.appendChild(badge(t.state === "working" ? "online" : "info", t.state));
     var main = el("div", "bb-row__main");
     /* the snapshot's durable name-or-id label leads the row so a scan says
@@ -644,6 +688,7 @@ __FM_BEARINGS_BOARD_DATA__
   if (!data.landed.length) ld.appendChild(el("div", "bb-empty", "No recent completions are in the current baseline."));
   data.landed.forEach(function (t) {
     var row = el("div", "bb-row");
+    registerRepo(row, t, "landed");
     var chk = el("span", "bb-row__check");
     chk.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
     row.appendChild(chk);
@@ -680,6 +725,7 @@ __FM_BEARINGS_BOARD_DATA__
   }
   chartedOrder(data.charted).forEach(function (t) {
     var row = el("div", "bb-row");
+    registerRepo(row, t, isWarning(t) ? "charted-warning" : "charted");
     if (t.dispatchable && !isWarning(t)) {
       anyPickable = true;
       var pick = document.createElement("input");
@@ -740,6 +786,47 @@ __FM_BEARINGS_BOARD_DATA__
       bar.classList.add("is-queued");
     });
   }
+  /* repo chips: shown only when the board spans more than one repo */
+  var repos = [];
+  filterables.forEach(function (f) { if (f.repo && repos.indexOf(f.repo) === -1) repos.push(f.repo); });
+  repos.sort();
+  var chipRow = document.getElementById("bb-repos");
+  var chips = [];
+  function applyRepoFilter(repo) {
+    activeRepo = repo ? String(repo) : "";
+    filterables.forEach(function (f) {
+      if (f.section === "call") f.node.fmFiltered = !matchesRepo(f);
+      else f.node.hidden = !matchesRepo(f);
+    });
+    chips.forEach(function (c) { c.node.className = "bb-repo" + (c.repo === activeRepo ? " is-active" : ""); });
+    renderStats();
+    showCard(0);
+  }
+  if (repos.length > 1) {
+    chipRow.hidden = false;
+    [""].concat(repos).forEach(function (repo) {
+      var chip = el("button", "bb-repo", repo || "all repos");
+      chip.type = "button";
+      chip.addEventListener("click", function () { applyRepoFilter(repo === activeRepo ? "" : repo); });
+      chips.push({ node: chip, repo: repo });
+      chipRow.appendChild(chip);
+    });
+  }
+  applyRepoFilter("");
+  window.fmBoard = { repos: repos.slice(), filterRepo: applyRepoFilter };
+
+  /* data age: the payload's generated stamp restated as a relative age, so a
+     stale page reads as stale instead of as current */
+  var ageNode = document.getElementById("bb-age");
+  function renderAge() {
+    var t = Date.parse(data.generated);
+    if (isNaN(t)) { ageNode.textContent = "data as of " + data.generated; return; }
+    var mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+    ageNode.textContent = "data as of " + new Date(t).toISOString().slice(11, 19) + " UTC · " +
+      (mins < 1 ? "just now" : mins === 1 ? "1 min ago" : mins + " min ago");
+  }
+  renderAge();
+  if (typeof window.setInterval === "function") window.setInterval(renderAge, 30000);
   } catch (e) {
     renderBoardError("The board data could not be rendered");
   }

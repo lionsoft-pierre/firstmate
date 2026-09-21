@@ -34,7 +34,9 @@ pass() { printf 'ok - %s\n' "$1"; }
 note() { printf '# %s\n' "$1"; }
 
 LAB=''
+EVENTS_PID=''
 cleanup() {
+  [ -z "$EVENTS_PID" ] || kill "$EVENTS_PID" >/dev/null 2>&1 || true
   [ -z "$LAB" ] || {
     [ ! -f "$LAB/.lavish/bearings-board.html" ] \
       || lavish-axi end "$LAB/.lavish/bearings-board.html" >/dev/null 2>&1 || true
@@ -118,3 +120,33 @@ esac
 lavish-axi 2>/dev/null | grep -F "$BOARD," | grep -q ',open,' \
   || fail "the board build reported success while the session was still not live"
 pass "the board build reopens a captain-ended session against real lavish-axi instead of arming a dead one"
+
+# THE VENDOR BEHAVIORS THE LIVE BOARD LEANS ON. bin/fm-bearings-board.sh refresh
+# rewrites the board file atomically and calls nothing else, so the open page
+# must be reloaded by the server's own file watcher, and a sibling file beside
+# the board must be served fresh on every read.
+printf 'gen-1\n' > "$LAB/.lavish/probe.txt"
+[ "$(curl -fsS "$base/artifact/$key/probe.txt")" = gen-1 ] \
+  || fail "lavish-axi ${VERSION:-version-unknown} does not serve a sibling file beside the board"
+printf 'gen-2\n' > "$LAB/.lavish/.probe.tmp"
+mv -f "$LAB/.lavish/.probe.tmp" "$LAB/.lavish/probe.txt"
+[ "$(curl -fsS "$base/artifact/$key/probe.txt")" = gen-2 ] \
+  || fail "lavish-axi ${VERSION:-version-unknown} served a stale sibling file after an atomic rewrite"
+pass "lavish-axi ${VERSION:-version-unknown} serves sibling files fresh on every read"
+
+curl -sN --max-time 20 "$base/events/$key" > "$LAB/events.log" 2>/dev/null &
+EVENTS_PID=$!
+sleep 1
+jq '.captains_call[0].title = "Guard placeholder, rewritten"' "$LAB/payload.json" > "$LAB/payload-rewritten.json"
+run_board publish "$LAB/payload-rewritten.json" >/dev/null 2>&1 || fail "the guard board did not republish"
+i=0
+while ! grep -q '^event: reload' "$LAB/events.log" 2>/dev/null && [ "$i" -lt 100 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+kill "$EVENTS_PID" >/dev/null 2>&1 || true
+wait "$EVENTS_PID" >/dev/null 2>&1 || true
+EVENTS_PID=''
+grep -q '^event: reload' "$LAB/events.log" \
+  || fail "lavish-axi ${VERSION:-version-unknown} pushed no reload after an atomic board rewrite; the live board's refresh path must be revisited"
+pass "lavish-axi ${VERSION:-version-unknown} reloads the open board after an atomic rewrite"

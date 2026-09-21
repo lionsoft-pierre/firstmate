@@ -3333,6 +3333,129 @@ test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
+# --- board projection --------------------------------------------------------
+# The fleet board payload is derived with no model in the loop: every card and
+# row comes from structured backlog and task records alone, the output must
+# satisfy the shared fm-bearings-board.v1 contract, and nothing reaches the
+# network.
+test_board_projection_is_machine_derived_and_valid() {
+  local home fakebin out
+  home=$(make_home board)
+  fakebin=$(make_fakebin "$home")
+  write_fixture "$home"
+  cat > "$home/data/backlog.md" <<'EOF2'
+## In flight
+- [ ] ship-task - Ship the thing (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] scout-x - Investigate the thing data/scout-x/report.md (repo: firstmate) (kind: scout) (since 2026-07-11)
+- [ ] pr-ready - Land the ready thing (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] pr-yolo - Land the yolo thing (repo: firstmate) (kind: ship) (since 2026-07-11)
+
+## Queued
+- [ ] board-call - Choose the cutover window (repo: firstmate) (kind: ship) (since 2026-07-10) (hold: captain window choice pending) (hold-kind: captain)
+  Captain hold set: 2026-07-11T12:00:00Z
+
+  Option: now = Cut over now
+  Option: friday = Wait for Friday
+  Option: reconcile = Never carded
+  Recommend: friday
+- [ ] board-question - Approve the naming (repo: firstmate) (kind: captain) (since 2026-07-10) (hold: captain naming call pending) (hold-kind: captain)
+  Captain hold set: 2026-07-11T12:00:00Z
+- [ ] deferred-call - Deferred captain call (repo: firstmate) (kind: captain) (hold: revisit with the captain) (hold-kind: captain) (hold-until: 2026-08-01)
+- [ ] live-gate - Real queued work blocked-by: ship-task (repo: firstmate) (kind: ship)
+- [ ] plain-queued - Plain queued work (repo: firstmate) (kind: ship) (since 2026-07-09)
+
+## Done
+- [x] done-a - Landed thing https://github.com/kunchenguid/firstmate/pull/7 (repo: firstmate) (kind: ship) (merged 2026-07-10)
+EOF2
+  for id in pr-ready pr-yolo; do
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" \
+      "worktree=$home/projects/ship-wt" \
+      "project=firstmate" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=no-mistakes" \
+      "yolo=$([ "$id" = pr-yolo ] && printf on || printf off)" \
+      "pr=https://github.com/kunchenguid/firstmate/pull/2$([ "$id" = pr-yolo ] && printf 2 || printf 1)"
+    record_claude_state "$home/state" "$id" idle
+    printf 'done [at=1790000000]: PR https://github.com/kunchenguid/firstmate/pull/2%s checks green\n' \
+      "$([ "$id" = pr-yolo ] && printf 2 || printf 1)" > "$home/state/$id.status"
+  done
+  out=$(run "$home" "$fakebin" --board) || fail "the board projection failed: $out"
+  printf '%s\n' "$out" > "$home/board.json"
+  # shellcheck source=bin/fm-bearings-board-lib.sh
+  # shellcheck disable=SC1091
+  . "$ROOT/bin/fm-bearings-board-lib.sh"
+  fm_bearings_board_validate "$home/board.json" \
+    || fail "the board projection does not satisfy the shared payload contract: $out"
+  [ ! -s "$home/net.log" ] || fail "the board projection reached the network: $(cat "$home/net.log")"
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-bearings-board.v1" and .prs_live == false
+    and ([.captains_call[] | .key] | index("board-call") != null and index("board-question") != null
+        and index("merge.pr-ready") != null and index("merge.pr-yolo") == null and index("deferred-call") == null)
+    and ([.captains_call[] | .key] | unique | length) == (.captains_call | length)
+    and (.captains_call[] | select(.key == "board-call")
+      | .type == "decision" and .repo == "firstmate" and .title == "Choose the cutover window"
+        and .about == "captain window choice pending"
+        and ([.options[] | .value + "=" + .label] == ["now=Cut over now", "friday=Wait for Friday"])
+        and .recommend_value == "friday" and .close == "release" and .allow_freeform == true
+        and (.decide | length) > 0)
+    and (.captains_call[] | select(.key == "board-question")
+      | (.options | length) == 0 and .allow_freeform == true and (has("close") | not)
+        and (has("recommend_value") | not) and .about == "captain naming call pending")
+    and (.captains_call[] | select(.key == "merge.pr-ready")
+      | .type == "merge" and .risk == "unrecorded" and .title == "Land the ready thing"
+        and .pr_url == "https://github.com/kunchenguid/firstmate/pull/21"
+        and ([.options[] | .value] == ["merge", "hold"]) and .allow_freeform == true
+        and (.detail | test("checks green")))
+    and ([.charted[] | .id] | index("deferred-call") != null and index("live-gate") != null and index("plain-queued") != null)
+    and ([.charted[] | .id] | unique | length) == (.charted | length)
+    and (.charted[0] | .id == "plain-queued")
+    and (.charted[] | select(.id == "deferred-call") | .dispatchable == false and .kind == "queued" and (.reason | test("until 2026-08-01")))
+    and (.charted[] | select(.id == "live-gate") | .dispatchable == false and .kind == "queued")
+    and (.charted[] | select(.id == "secondmate.mate.reconcile") | .dispatchable == false and .kind == "warning")
+    and (.charted[] | select(.id == "plain-queued") | .dispatchable == true and .reason == "" and .filed == "2026-07-09" and .repo == "firstmate")
+    and (.underway[] | select(.id == "ship-task") | .name == "Ship the thing" and .state == "working" and .repo == "firstmate")
+    and ([.underway[] | .id] | index("pr-ready") != null)
+    and (.landed[] | select(.id == "done-a") | .what == "Landed thing" and .repo == "firstmate"
+        and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7" and .owner == "(main)")
+  ' >/dev/null || fail "the board projection did not derive the fixture mechanically: $out"
+  pass "the board projection derives cards and rows from structured records alone and validates"
+}
+
+# A secondmate's captain hold is keyed by its home so the main-home keyed intake
+# can never close a same-named main task by mistake.
+test_board_projection_keys_secondmate_holds_by_home() {
+  local home mate fakebin out
+  home=$(make_home board-secondmate)
+  mate="$TMP_ROOT/board-secondmate-home"
+  write_domain_alpha_fixture "$home" "$mate"
+  mkdir -p "$mate/projects/phase8"
+  cat > "$mate/data/backlog.md" <<'EOF2'
+## In flight
+- [ ] phase8 - Sample rollout Phase 8 (repo: sample) (kind: ship) (since 2026-07-13)
+
+## Queued
+- [ ] phase8-decision-release - Choose sample release (repo: sample) (kind: captain) (hold: captain release choice pending) (hold-kind: captain)
+
+## Done
+EOF2
+  fm_write_meta "$mate/state/phase8.meta" \
+    "window=firstmate:fm-phase8" "worktree=$mate/projects/phase8" "project=sample" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$mate/state" phase8 idle
+  printf 'working: rolling out\n' > "$mate/state/phase8.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(run "$home" "$fakebin" --board) || fail "the board projection failed: $out"
+  printf '%s' "$out" | jq -e '
+    ([.captains_call[] | .key] == ["domain-alpha.phase8-decision-release"])
+    and (.captains_call[0] | .title == "Choose sample release" and .about == "captain release choice pending"
+        and .repo == "sample" and .allow_freeform == true and (has("close") | not))
+    and (.underway | any(.[]; .id == "domain-alpha/phase8"))
+  ' >/dev/null || fail "a secondmate hold was not keyed by its home: $out"
+  pass "a secondmate captain hold is carded under its home-prefixed key"
+}
+
 test_default_is_bounded_and_local_only
 test_toon_json_parity
 test_landed_includes_secondmate_home_merges
@@ -3373,3 +3496,5 @@ test_revealed_deferred_holds_show_their_deferral_reason
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
+test_board_projection_is_machine_derived_and_valid
+test_board_projection_keys_secondmate_holds_by_home

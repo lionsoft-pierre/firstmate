@@ -21,7 +21,8 @@
 #
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
-#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
+#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD] \
+#     [--option <value>[=<label>]]... [--recommend <value>]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
@@ -52,6 +53,19 @@
 # `--until` records the captain's own deferral date through `tasks-axi hold
 # --until`, so a "revisit later" answer is stored as a date instead of a live
 # card.
+# `--option <value>[=<label>]` (repeatable) and `--recommend <value>` record the
+# answers the captain can pick as machine-readable `Option: <value> = <label>`
+# and `Recommend: <value>` body lines directly under the hold-set stamp, so the
+# model-free board generator (`bin/fm-bearings-snapshot.sh --board`) cards the
+# call with those exact choices and no prose authoring. A value is a slug and
+# never the reserved `reconcile`; the recommendation must name one of the given
+# values. A re-hold that passes options replaces the previous option lines,
+# while one that passes none keeps whatever lines are already recorded, and
+# `answer` leaves them in place as part of the record. Every successful hold,
+# answer, batch of answers, and reconcile outcome also refreshes the published
+# fleet board best-effort through `bin/fm-bearings-board.sh refresh`, which is
+# a silent no-op in a home that never opened the board and never changes this
+# command's result.
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
@@ -810,9 +824,46 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
   verify_hold_durable "${resolved%% *}"
 }
 
+# Record the answers the captain can pick as machine-readable body lines right
+# under the hold-set stamp, replacing any option lines a previous hold wrote and
+# keeping the rest of the body below them.
+write_option_lines() {  # <task-id> <shown-body> <recommend-or-empty> <option>...
+  local id=$1 body=$2 recommend=$3 hold_set rest lines='' opt value label tmp new_body
+  shift 3
+  body=$(decode_shown_value "$body") \
+    || fail "could not decode the existing body for $id"
+  hold_set=$(body_hold_set_timestamp "$body")
+  [ -n "$hold_set" ] || fail "task $id has no hold-set stamp to attach options to"
+  rest=${body#"Captain hold set: $hold_set"}
+  rest=$(printf '%s\n' "$rest" | grep -v -e '^Option: ' -e '^Recommend: ' | sed -e '/./,$!d' || true)
+  for opt in "$@"; do
+    value=${opt%%=*}
+    label=${opt#*=}
+    [ "$opt" != "$value" ] || label=$value
+    lines=$(printf '%s\nOption: %s = %s' "$lines" "$value" "$label")
+  done
+  lines=${lines#$'\n'}
+  [ -z "$recommend" ] || lines=$(printf '%s\nRecommend: %s' "$lines" "$recommend")
+  new_body=$(printf 'Captain hold set: %s\n\n%s' "$hold_set" "$lines")
+  [ -z "$rest" ] || new_body=$(printf '%s\n\n%s' "$new_body" "$rest")
+  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-captain-hold-options.XXXXXX") \
+    || fail "cannot stage the option lines"
+  if ! printf '%s\n' "$new_body" > "$tmp"; then
+    rm -f -- "$tmp"
+    fail "cannot stage the option lines for $id"
+  fi
+  if ! tasks_axi update "$id" --body-file "$tmp" >/dev/null; then
+    rm -f -- "$tmp"
+    fail "could not record the options on $id"
+  fi
+  rm -f -- "$tmp"
+}
+
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
   local existing_hold_kind='' existing_held='' preserve_hold_set=0
+  local recommend='' opt value label seen=''
+  local -a options=()
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -822,11 +873,31 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
+      --option) shift; options+=("${1:-}") ;;
+      --recommend) shift; recommend=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
   done
   validate_slug task-id "$id"
+  for opt in "${options[@]+"${options[@]}"}"; do
+    value=${opt%%=*}
+    validate_slug option-value "$value"
+    [ "$value" != "$RECONCILE_VALUE" ] \
+      || fail "option value $RECONCILE_VALUE is reserved for the board's re-check choice"
+    label=${opt#*=}
+    [ "$opt" != "$value" ] || label=$value
+    validate_one_line option-label "$label"
+    case " $seen " in *" $value "*) fail "duplicate option value: $value" ;; esac
+    seen="$seen $value"
+  done
+  if [ -n "$recommend" ]; then
+    [ "${#options[@]}" -gt 0 ] || fail "--recommend needs at least one --option"
+    case " $seen " in
+      *" $recommend "*) ;;
+      *) fail "--recommend must name one of the given option values: $recommend" ;;
+    esac
+  fi
   validate_one_line reason "$reason"
   case "$reason" in *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;; esac
   if [ -n "$origin" ]; then
@@ -895,6 +966,10 @@ command_hold() {
   else
     tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null \
       || fail "could not hold task $id for the captain"
+  fi
+  if [ "${#options[@]}" -gt 0 ]; then
+    task_show_or_fail "$id" "task $id disappeared before recording its options"
+    write_option_lines "$id" "$(show_field "$show" body)" "$recommend" "${options[@]}"
   fi
   task_show "$id" || fail "task $id disappeared while holding it"
   show=$TASK_SHOW_OUTPUT
@@ -1330,7 +1405,7 @@ command_answers() {
       continue
     fi
     # shellcheck disable=SC2086  # release_flag is empty or a single literal flag.
-    if "$0" answer "$id" --decision-file "$tmp" $release_flag </dev/null >/dev/null 2>"$err"; then
+    if FM_CAPTAIN_HOLD_BOARD_REFRESH=0 "$0" answer "$id" --decision-file "$tmp" $release_flag </dev/null >/dev/null 2>"$err"; then
       # A parent-channel delivery problem is reported on stderr by the answer
       # path even when the close succeeded; keep it visible.
       [ ! -s "$err" ] || cat "$err" >&2
@@ -1923,10 +1998,25 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
   exit 2
 }
 
+# Every durable change to a captain call re-derives the published fleet board,
+# best-effort and silent: bin/fm-bearings-board.sh refresh is a no-op in a home
+# that never opened the board, and its outcome never changes this command's
+# result. `answers` refreshes once after its batch rather than once per row.
+refresh_board_best_effort() {
+  [ "${FM_CAPTAIN_HOLD_BOARD_REFRESH:-1}" = 1 ] || return 0
+  "$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort >/dev/null 2>&1 || true
+}
+
 case "${1:-}" in
-  hold) shift; command_hold "$@" ;;
-  answer) shift; command_answer "$@" ;;
-  answers) shift; command_answers "$@" ;;
+  hold) shift; command_hold "$@"; refresh_board_best_effort ;;
+  answer) shift; command_answer "$@"; refresh_board_best_effort ;;
+  answers)
+    shift
+    answers_rc=0
+    command_answers "$@" || answers_rc=$?
+    refresh_board_best_effort
+    exit "$answers_rc"
+    ;;
   reconcile-requests) shift; command_reconcile_requests "$@" ;;
   bind) shift; command_bind "$@" ;;
   unbind) shift; command_unbind "$@" ;;
@@ -1935,7 +2025,7 @@ case "${1:-}" in
   verify) shift; command_verify "$@" ;;
   open) shift; command_open "$@" ;;
   diverged) shift; command_diverged "$@" ;;
-  reconcile) shift; command_reconcile "$@" ;;
+  reconcile) shift; command_reconcile "$@"; refresh_board_best_effort ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

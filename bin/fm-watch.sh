@@ -235,6 +235,10 @@ HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
 case "$HOME_SUMMARY_INTERVAL" in
   ''|*[!0-9]*|0) HOME_SUMMARY_INTERVAL=300 ;;
 esac
+BOARD_REFRESH_INTERVAL=${FM_BOARD_REFRESH_INTERVAL:-60}  # seconds between fleet-board refreshes
+case "$BOARD_REFRESH_INTERVAL" in
+  ''|*[!0-9]*|0) BOARD_REFRESH_INTERVAL=60 ;;
+esac
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
@@ -2153,6 +2157,29 @@ home_summary_refresh_detached() {
   HOME_SUMMARY_PID=$!
 }
 
+# The published fleet board follows the same side-band rule. The board file is
+# the captain's opt-in: a home that never opened the /bearings lavish board has
+# nothing to refresh, and bin/fm-bearings-board.sh refresh refuses without it,
+# never calls lavish-axi, and rewrites only that file when the derived payload
+# changed, so Lavish's own file watcher reloads the open page. One tracked
+# child at a time, exactly like the ledger above; its digest file's mtime is
+# the last-attempt stamp the cadence check in the poll loop reads.
+BOARD_REFRESH_PID=
+BOARD_FILE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-bearings-board.sh" path 2>/dev/null || true)
+board_refresh_detached() {
+  [ -n "$BOARD_FILE" ] && [ -f "$BOARD_FILE" ] || return 0
+  if [ -n "$BOARD_REFRESH_PID" ]; then
+    if kill -0 "$BOARD_REFRESH_PID" 2>/dev/null; then
+      return 0
+    fi
+    wait "$BOARD_REFRESH_PID" 2>/dev/null || true
+    BOARD_REFRESH_PID=
+  fi
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort </dev/null >/dev/null 2>&1 &
+  BOARD_REFRESH_PID=$!
+}
+
 RECONCILE_REQUEST_PID=
 reconcile_requests_pending() {
   local request
@@ -2308,6 +2335,9 @@ while :; do
 
   if [ "$(age_of "$STATE/home-summary.json")" -ge "$HOME_SUMMARY_INTERVAL" ]; then
     home_summary_refresh_detached
+  fi
+  if [ "$(age_of "$STATE/.bearings-board-digest")" -ge "$BOARD_REFRESH_INTERVAL" ]; then
+    board_refresh_detached
   fi
 
   # Bearings publishes reconcile asks as local one-shot request files and
@@ -2498,6 +2528,7 @@ EOF
     # home_summary_refresh_detached for why publication stays off the beacon's
     # path. Publication failure stays side-band.
     home_summary_refresh_detached
+    board_refresh_detached
     files=""
     while IFS=$(printf '\t') read -r sf sig f; do
       [ -n "$sf" ] || continue

@@ -2,10 +2,13 @@
 // shim and print what the renderer actually produced, so board behavior is
 // asserted through the real template rather than by reading its source.
 //
-// Usage: node board-render-harness.mjs <built-board.html>
+// Usage: node board-render-harness.mjs <built-board.html> [<repo-filter>]
 // Prints one JSON document:
-//   { stats:[{n,label}], underway:[{title,sub,badges}],
-//     charted:[{title,sub,badges,pickable}], empty, more, error }
+//   { stats:[{n,label}], calls:[{title,hidden}], underway:[{title,sub,badges,hidden}],
+//     landed:[{title,sub,badges,hidden}], charted:[{title,sub,badges,pickable,hidden}],
+//     repos:[chip labels], age, empty, more, error }
+// With a repo filter, the page's own window.fmBoard.filterRepo is applied
+// first, so what is reported is the filtered board.
 import { readFileSync } from "node:fs";
 
 const html = readFileSync(process.argv[2], "utf8");
@@ -26,7 +29,13 @@ class Node {
     this.checked = false;
     this.classList = {
       add: (c) => { this.className = (this.className + " " + c).trim(); },
+      remove: (c) => { this.className = this.className.split(/\s+/).filter((x) => x && x !== c).join(" "); },
       contains: (c) => this.className.split(/\s+/).includes(c),
+      toggle: (c, force) => {
+        const on = force === undefined ? !this.classList.contains(c) : !!force;
+        if (on) this.classList.add(c); else this.classList.remove(c);
+        return on;
+      },
     };
   }
   get textContent() {
@@ -83,6 +92,8 @@ globalThis.TextEncoder = TextEncoder;
 
 const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"));
 new Function(script)();
+const repoFilter = process.argv[3];
+if (repoFilter && globalThis.window.fmBoard) globalThis.window.fmBoard.filterRepo(repoFilter);
 
 const badgesOf = (row) =>
   row.children
@@ -105,8 +116,28 @@ const rowsOf = (container) =>
         sub: main?.children.find((c) => c.className.includes("bb-row__sub"))?.textContent ?? "",
         badges: badgesOf(row),
         pickable: row.children.some((c) => c.className.includes("bb-pick") && !c.className.includes("spacer")),
+        hidden: row.hidden === true,
       };
     });
+
+const findClass = (node, cls) => {
+  for (const c of node.children) {
+    if (c.className.split(/\s+/).includes(cls)) return c;
+    const deeper = findClass(c, cls);
+    if (deeper) return deeper;
+  }
+  return null;
+};
+const deck = byId.get("bb-call") || new Node("div");
+const calls = deck.children
+  .filter((c) => c.className.split(/\s+/).includes("bb-decision"))
+  .map((card) => ({
+    title: findClass(card, "bb-decision__title")?.textContent ?? "",
+    hidden: card.fmFiltered === true,
+  }));
+const repos = (byId.get("bb-repos") || new Node("div")).children.map((c) => c.textContent);
+const age = (byId.get("bb-age") || new Node("span")).textContent;
+const landed = rowsOf(byId.get("bb-landed") || new Node("div"));
 
 const uw = byId.get("bb-underway") || new Node("div");
 const underway = rowsOf(uw);
@@ -123,4 +154,4 @@ const empty = ch.children.filter((c) => c.className.includes("bb-empty")).map((c
 const more = ch.children.filter((c) => c.className.includes("bb-morechip")).map((c) => c.textContent);
 
 process.stdout.write(
-  JSON.stringify({ stats, underway, charted, empty, more, error: errorText }) + "\n");
+  JSON.stringify({ stats, calls, underway, landed, charted, repos, age, empty, more, error: errorText }) + "\n");

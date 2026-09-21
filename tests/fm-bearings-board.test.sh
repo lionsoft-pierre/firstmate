@@ -777,6 +777,166 @@ test_build_refuses_a_nondecision_reconcile_value() {
   pass "build reserves reconcile across non-decision cards"
 }
 
+# --- part 4: publish, refresh, and build without a composed payload ----------
+# A lavish-axi that records every invocation and refuses, for the commands that
+# must never reach Lavish at all.
+forbid_lavish() {  # <home>
+  cat > "$1/fakebin/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${LAVISH_FAKE_STATE:?}/calls"
+exit 1
+SH
+  chmod +x "$1/fakebin/lavish-axi"
+}
+
+lavish_calls() {  # <home>
+  if [ -f "$1/lavish-state/calls" ]; then
+    wc -l < "$1/lavish-state/calls" | tr -d '[:space:]'
+  else
+    printf 0
+  fi
+}
+
+# A home whose generator has something to derive: one queued row and no workers.
+seed_backlog() {  # <home>
+  mkdir -p "$1/data"
+  cat > "$1/data/backlog.md" <<'EOF2'
+## In flight
+
+## Queued
+- [ ] seeded-row - Seeded queued work (repo: sample) (kind: ship) (since 2026-08-01)
+
+## Done
+EOF2
+}
+
+append_queued_row() {  # <home> <id> <title>
+  python3 - "$1/data/backlog.md" "$2" "$3" <<'PY'
+from pathlib import Path
+import sys
+path, row_id, title = sys.argv[1], sys.argv[2], sys.argv[3]
+p = Path(path)
+text = p.read_text()
+p.write_text(text.replace("\n## Done", "- [ ] %s - %s (repo: sample) (kind: ship) (since 2026-08-02)\n\n## Done" % (row_id, title), 1))
+PY
+}
+
+board_charted_ids() {  # <home>
+  extract_payload "$1/.lavish/bearings-board.html" | jq -r '[.charted[].id] | join(",")'
+}
+
+test_publish_writes_the_board_without_lavish() {
+  local home data out
+  home=$(make_home publish-only)
+  forbid_lavish "$home"
+  data="$home/payload.json"
+  write_valid_payload "$data"
+  out=$(run_board "$home" publish "$data") || fail "publish failed: $out"
+  [ "$out" = "board: $home/.lavish/bearings-board.html" ] \
+    || fail "publish did not report exactly the board path: $out"
+  extract_payload "$home/.lavish/bearings-board.html" \
+    | jq -e '.schema == "fm-bearings-board.v1" and (.captains_call | length) == 2' >/dev/null \
+    || fail "the published board does not carry the payload"
+  [ "$(lavish_calls "$home")" = 0 ] || fail "publish reached lavish-axi"
+  [ "$(run_procevent "$home" list)" = "no sources registered" ] \
+    || fail "publish registered an answer source"
+  pass "publish writes the board and never touches Lavish or the answer source"
+}
+
+test_refresh_refuses_without_a_board_and_stays_silent_best_effort() {
+  local home out rc
+  home=$(make_home refresh-none)
+  forbid_lavish "$home"
+  seed_backlog "$home"
+  set +e
+  out=$(run_board "$home" refresh 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "refresh without a board exited $rc instead of 3: $out"
+  case "$out" in *"no board is published"*) ;; *) fail "refresh did not name the missing board: $out" ;; esac
+  out=$(run_board "$home" refresh --best-effort) || fail "a best-effort refresh without a board did not exit 0"
+  [ -z "$out" ] || fail "a best-effort refresh without a board printed: $out"
+  assert_absent "$home/.lavish/bearings-board.html" "refresh created a board in a home that never opened one"
+  assert_absent "$home/state/.bearings-board-refresh.log" "a home without a board logged a refresh failure"
+  [ "$(lavish_calls "$home")" = 0 ] || fail "refresh reached lavish-axi"
+  pass "refresh refuses without a board, and is silent about it under --best-effort"
+}
+
+test_refresh_republishes_only_when_the_payload_changed() {
+  local home out first second
+  home=$(make_home refresh-gate)
+  forbid_lavish "$home"
+  seed_backlog "$home"
+  write_valid_payload "$home/payload.json"
+  run_board "$home" publish "$home/payload.json" >/dev/null || fail "the seed publish failed"
+  out=$(run_board "$home" refresh) || fail "the first refresh failed: $out"
+  case "$out" in "refreshed: $home/.lavish/bearings-board.html") ;; *) fail "the first refresh did not republish: $out" ;; esac
+  [ -s "$home/state/.bearings-board-digest" ] || fail "the first refresh recorded no digest"
+  first=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime)' "$home/state/.bearings-board-digest")
+  sleep 1
+  out=$(run_board "$home" refresh) || fail "the unchanged refresh failed: $out"
+  case "$out" in unchanged:*) ;; *) fail "an unchanged fleet was republished: $out" ;; esac
+  second=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime)' "$home/state/.bearings-board-digest")
+  python3 -c 'import sys; sys.exit(0 if float(sys.argv[2]) > float(sys.argv[1]) else 1)' "$first" "$second" \
+    || fail "an unchanged refresh did not advance the digest's last-attempt stamp"
+  append_queued_row "$home" second-row "A second queued row"
+  out=$(run_board "$home" refresh) || fail "the changed refresh failed: $out"
+  case "$out" in refreshed:*) ;; *) fail "a changed fleet was not republished: $out" ;; esac
+  [ "$(board_charted_ids "$home")" = "second-row,seeded-row" ] \
+    || fail "the republished board does not carry the new row: $(board_charted_ids "$home")"
+  [ "$(lavish_calls "$home")" = 0 ] || fail "refresh reached lavish-axi"
+  pass "refresh republishes the board only when the derived payload changed"
+}
+
+test_refresh_never_reopens_a_session_the_captain_ended() {
+  local home out
+  home=$(make_home refresh-ended)
+  seed_backlog "$home"
+  run_board "$home" build >/dev/null || fail "the first build failed"
+  end_session_as_captain "$home"
+  # Stop the listener the build armed so its own poll retries cannot be
+  # mistaken for a refresh reaching Lavish; the board file stays.
+  run_procevent "$home" retire "$(run_lavish_source_id "$home" "$home/.lavish/bearings-board.html")" >/dev/null \
+    || fail "could not retire the armed listener"
+  forbid_lavish "$home"
+  append_queued_row "$home" after-end "Filed after the captain closed the board"
+  out=$(run_board "$home" refresh) || fail "refresh after an ended session failed: $out"
+  case "$out" in refreshed:*) ;; *) fail "refresh did not republish after an ended session: $out" ;; esac
+  [ "$(lavish_calls "$home")" = 0 ] \
+    || fail "refresh called lavish-axi on an ended session: $(cat "$home/lavish-state/calls")"
+  pass "refresh republishes silently and never reopens a session the captain ended"
+}
+
+test_build_without_a_payload_generates_one() {
+  local home out
+  home=$(make_home build-generated)
+  seed_backlog "$home"
+  out=$(run_board "$home" build) || fail "build without a payload failed: $out"
+  case "$out" in "board: $home/.lavish/bearings-board.html"*) ;; *) fail "build did not start with the board line: $out" ;; esac
+  case "$out" in *"armed: lavish-"*) ;; *) fail "build did not arm the generated board: $out" ;; esac
+  extract_payload "$home/.lavish/bearings-board.html" | jq -e '
+    .schema == "fm-bearings-board.v1"
+      and (.captains_call | length) == 0
+      and (.charted | length) == 1
+      and (.charted[0] | .id == "seeded-row" and .repo == "sample" and .dispatchable == true and .filed == "2026-08-01")
+  ' >/dev/null || fail "the generated board does not reflect the seeded backlog"
+  pass "build derives its own payload when none is given"
+}
+
+test_serve_refuses_without_a_board() {
+  local home out rc
+  home=$(make_home serve-none)
+  set +e
+  out=$(run_board "$home" serve 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "serve without a board succeeded"
+  case "$out" in *"no board is published"*) ;; *) fail "serve did not name the missing board: $out" ;; esac
+  [ "$(run_procevent "$home" list)" = "no sources registered" ] \
+    || fail "serve without a board registered an answer source"
+  pass "serve refuses to bind or arm when no board is published"
+}
+
 test_path_is_stable_and_home_scoped
 test_build_refuses_malformed_payloads_before_touching_the_board
 test_charted_kind_is_optional_and_accepts_both_values
@@ -795,3 +955,9 @@ test_build_fails_when_reconcile_cannot_establish_a_listener
 test_every_decision_card_carries_the_reconcile_choice
 test_build_refuses_a_payload_that_occupies_the_reconcile_value
 test_build_refuses_a_nondecision_reconcile_value
+test_publish_writes_the_board_without_lavish
+test_refresh_refuses_without_a_board_and_stays_silent_best_effort
+test_refresh_republishes_only_when_the_payload_changed
+test_refresh_never_reopens_a_session_the_captain_ended
+test_build_without_a_payload_generates_one
+test_serve_refuses_without_a_board
