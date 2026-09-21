@@ -44,7 +44,11 @@
 #            accepted for tests and diagnostics. Output starts with `board:`.
 #            It records the digest and the check stamp of the payload it
 #            published, so the watcher's next tick republishes nothing
-#            identical and the page the captain just opened is not reloaded.
+#            identical and the page the captain just opened is not reloaded,
+#            and it publishes and records under the same single-flight refresh
+#            lock, waiting for an in-flight refresh (bounded by
+#            FM_BOARD_REFRESH_TIMEOUT) instead of yielding, so that refresh
+#            can never republish identical content over the fresh build.
 # refresh    Re-derive the payload and republish the board ONLY when the derived
 #            payload changed (its `generated` stamp excluded), so an open page
 #            reloads on real fleet change and never on the clock. Prints
@@ -466,24 +470,38 @@ serve_board() {
 }
 
 GENERATED_PAYLOAD=
-cleanup_generated_payload() {
+build_cleanup() {
   [ -z "$GENERATED_PAYLOAD" ] || rm -f -- "$GENERATED_PAYLOAD"
+  if [ "$REFRESH_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$REFRESH_LOCK" || true
+    REFRESH_LOCK_HELD=0
+  fi
 }
 
 command_build() {
-  local data=${1-} digest
+  local data=${1-} digest rc=0
   [ "$#" -le 1 ] || { usage >&2; exit 2; }
+  trap build_cleanup EXIT
   if [ -z "$data" ]; then
     GENERATED_PAYLOAD=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-bearings-board-gen.XXXXXX") \
       || fail "cannot stage the generated board payload"
-    trap cleanup_generated_payload EXIT
     generate_payload "$GENERATED_PAYLOAD" || fail "cannot generate the board payload"
     data=$GENERATED_PAYLOAD
   fi
+  mkdir -p "$STATE" 2>/dev/null || fail "state directory is unavailable: $STATE"
+  fm_lock_acquire_wait_bounded "$REFRESH_LOCK" "$REFRESH_TIMEOUT" || rc=$?
+  case "$rc" in
+    0) ;;
+    124) fail "an in-flight refresh held $REFRESH_LOCK past the ${REFRESH_TIMEOUT}-second bound" ;;
+    *) fail "cannot acquire the board refresh lock $REFRESH_LOCK" ;;
+  esac
+  REFRESH_LOCK_HELD=1
   publish_board "$data"
   digest=$(payload_digest "$data") || fail "cannot digest the published board payload"
   record_digest "$digest" || fail "cannot record the board digest"
   write_checked_stamp || fail "cannot record the board check stamp"
+  fm_lock_release "$REFRESH_LOCK" || fail "cannot release the board refresh lock"
+  REFRESH_LOCK_HELD=0
   serve_board
 }
 

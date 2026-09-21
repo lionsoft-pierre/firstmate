@@ -81,7 +81,10 @@
 #     skips and firstmate routes by hand); its title is the task title, its
 #     `about` is the hold reason verbatim, its options are the task body's
 #     `Option: <value> = <label>` lines with `Recommend: <value>` marking one
-#     (bin/fm-captain-hold.sh hold --option/--recommend writes them), a
+#     (bin/fm-captain-hold.sh hold --option/--recommend writes them as the
+#     contiguous block directly under the hold-set stamp, and only that block
+#     is read, so an earlier resolution record whose text starts a line with
+#     `Option:` is never carded), a
 #     freeform answer box is always offered, and a hold on a work item
 #     (kind other than captain) closes with `release`;
 #   - a task with a recorded PR (pr= metadata) whose current state is done
@@ -739,15 +742,21 @@ if [ "$BOARD" = 1 ]; then
     def dedup_by(f): reduce .[] as $x ([]; if any(.[]; f == ($x | f)) then . else . + [$x] end);
     def record($id): (first($snap.backlog.records[]? | select(.structured == true and .id == $id)) // null);
     def mate($id): (first(($snap.secondmate_current.records // [])[] | select(.id == $id)) // null);
+    def hold_block($lines):
+      [ ($lines // [])[] | strings ]
+      | (if ((.[0] // "") | test("^Captain hold set:")) then .[1:] else . end)
+      | reduce .[] as $line ({block: [], open: true};
+          if .open and ($line | test("^(Option|Recommend):[[:space:]]"))
+          then .block += [$line] else .open = false end)
+      | .block;
     def option_lines($lines):
-      [ ($lines // [])[]
-        | strings
+      [ hold_block($lines)[]
         | capture("^Option:[[:space:]]*(?<value>[A-Za-z0-9._-]{1,128})[[:space:]]*(?:=[[:space:]]*(?<label>.*[^[:space:]]))?[[:space:]]*$")
         | select(.value != "reconcile")
         | {value, label: (if (.label // "") == "" then .value else .label end)} ]
       | dedup_by(.value);
     def recommend_line($lines; $options):
-      (first(($lines // [])[] | strings
+      (first(hold_block($lines)[]
          | capture("^Recommend:[[:space:]]*(?<value>[A-Za-z0-9._-]{1,128})[[:space:]]*$") | .value) // null) as $v
       | if $v != null and ([$options[].value] | index($v)) != null then $v else null end;
     def decision_card($d):

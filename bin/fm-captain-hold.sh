@@ -59,11 +59,15 @@
 # model-free board generator (`bin/fm-bearings-snapshot.sh --board`) cards the
 # call with those exact choices and no prose authoring. A value is a slug and
 # never the reserved `reconcile`; the recommendation must name one of the given
-# values. A re-hold that passes options replaces the previous option lines, an
-# active re-hold that passes none keeps whatever lines are already recorded,
-# and a new hold on a task that is no longer held drops them, so a later
-# question never inherits an earlier one's choices; `answer` leaves them in
-# place as part of the record. Every successful hold, answer, batch of
+# values. The option block is the contiguous block directly under the stamp,
+# ending at the first blank line, and it is the only place these commands ever
+# rewrite: a re-hold that passes options replaces that block, an active
+# re-hold that passes none keeps it, and a new hold on a task that is no
+# longer held drops it, so a later question never inherits an earlier one's
+# choices while every resolution record and the rest of the body, including a
+# captain decision whose text happens to start a line with `Option:`, stay
+# byte-for-byte intact; `answer` leaves the block in place as part of the
+# record. Every successful hold, answer, batch of
 # answers, and reconcile outcome also refreshes the published fleet board
 # through `bin/fm-bearings-board.sh refresh --detach`, which hands the work to
 # a detached best-effort child and returns at once, is a silent no-op in a
@@ -792,7 +796,7 @@ write_hold_set_stamp() {  # <task-id> <shown-body> <timestamp> <preserve-existin
     esac
   fi
   if [ "$preserve" != 1 ]; then
-    body=$(printf '%s\n' "$body" | grep -v -e '^Option: ' -e '^Recommend: ' | sed -e '/./,$!d' || true)
+    body=$(printf '%s\n' "$body" | strip_leading_option_block)
   fi
   new_body=$(printf 'Captain hold set: %s' "$hold_set")
   if [ -n "$body" ]; then
@@ -829,8 +833,21 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
   verify_hold_durable "${resolved%% *}"
 }
 
+# Drop the option block a previous hold wrote directly under the stamp: only
+# the leading contiguous block, and only when it is an option block, so a
+# resolution record or user body below it is never touched.
+strip_leading_option_block() {  # stdin: body after the stamp; stdout: the rest
+  sed -e '/./,$!d' \
+    | awk '
+      NR == 1 { optblock = (/^Option: / || /^Recommend: /) }
+      optblock && /^$/ { optblock = 0 }
+      optblock && (/^Option: / || /^Recommend: /) { next }
+      { print }' \
+    | sed -e '/./,$!d'
+}
+
 # Record the answers the captain can pick as machine-readable body lines right
-# under the hold-set stamp, replacing any option lines a previous hold wrote and
+# under the hold-set stamp, replacing the option block a previous hold wrote and
 # keeping the rest of the body below them.
 write_option_lines() {  # <task-id> <shown-body> <recommend-or-empty> <option>...
   local id=$1 body=$2 recommend=$3 hold_set rest lines='' opt value label tmp new_body
@@ -840,7 +857,7 @@ write_option_lines() {  # <task-id> <shown-body> <recommend-or-empty> <option>..
   hold_set=$(body_hold_set_timestamp "$body")
   [ -n "$hold_set" ] || fail "task $id has no hold-set stamp to attach options to"
   rest=${body#"Captain hold set: $hold_set"}
-  rest=$(printf '%s\n' "$rest" | grep -v -e '^Option: ' -e '^Recommend: ' | sed -e '/./,$!d' || true)
+  rest=$(printf '%s\n' "$rest" | strip_leading_option_block)
   for opt in "$@"; do
     value=${opt%%=*}
     label=${opt#*=}

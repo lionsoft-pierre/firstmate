@@ -1066,6 +1066,60 @@ SH
   pass "a busy refresh leaves a pending marker and the lock holder publishes exactly one follow-up"
 }
 
+# A build never races an in-flight refresh: it waits for the single-flight
+# lock, publishes once the refresh released it, and records the digest of the
+# payload it published, so the refresh can never republish identical content
+# over the fresh board.
+test_build_waits_for_an_in_flight_refresh() {
+  local home out i refresh_pid build_pid
+  home=$(make_home build-waits)
+  seed_backlog "$home"
+  write_valid_payload "$home/payload.json"
+  run_board "$home" publish "$home/payload.json" >/dev/null || fail "the seed publish failed"
+  cat > "$home/fakebin/generator" <<SH
+#!/usr/bin/env bash
+: > "$home/gen-started"
+while [ ! -e "$home/gen-release" ]; do
+  [ "\$SECONDS" -lt 60 ] || exit 75
+  sleep 0.05
+done
+jq '.charted += [{id: "generated-row", repo: "sample", title: "Generated row", reason: "", dispatchable: true}]' "$home/payload.json"
+SH
+  cat > "$home/fakebin/cat-build-payload" <<SH
+#!/usr/bin/env bash
+cat "$home/build-payload.json"
+SH
+  chmod +x "$home/fakebin/generator" "$home/fakebin/cat-build-payload"
+  jq '.charted = [{id: "built-row", repo: "sample", title: "Built row", reason: "", dispatchable: true}]' \
+    "$home/payload.json" > "$home/build-payload.json"
+  FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/generator" run_board "$home" refresh > "$home/refresh.out" 2>&1 &
+  refresh_pid=$!
+  i=0
+  while [ ! -e "$home/gen-started" ]; do
+    [ "$i" -lt 200 ] || fail "the blocking refresh never started deriving"
+    sleep 0.05
+    i=$((i + 1))
+  done
+  run_board "$home" build "$home/build-payload.json" > "$home/build.out" 2>&1 &
+  build_pid=$!
+  i=0
+  while [ "$i" -lt 10 ]; do sleep 0.1; i=$((i + 1)); done
+  kill -0 "$build_pid" 2>/dev/null || fail "build did not wait for the in-flight refresh: $(cat "$home/build.out")"
+  [ "$(board_charted_ids "$home")" = "sample-queued" ] \
+    || fail "build published while the refresh still held the lock: $(board_charted_ids "$home")"
+  : > "$home/gen-release"
+  wait "$refresh_pid" || fail "the blocking refresh failed: $(cat "$home/refresh.out")"
+  wait "$build_pid" || fail "build failed after the refresh released the lock: $(cat "$home/build.out")"
+  case "$(head -1 "$home/build.out")" in "board: $home/.lavish/bearings-board.html") ;; *) fail "build did not report the board: $(cat "$home/build.out")" ;; esac
+  [ "$(board_charted_ids "$home")" = "built-row" ] \
+    || fail "the board does not carry the build's payload after the refresh released the lock: $(board_charted_ids "$home")"
+  out=$(FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/cat-build-payload" run_board "$home" refresh) \
+    || fail "the refresh after build failed: $out"
+  case "$out" in unchanged:*) ;; *) fail "the digest build recorded does not match the payload it published: $out" ;; esac
+  assert_absent "$home/state/.bearings-board-refresh.lock" "the refresh lock was not released after build"
+  pass "build waits for an in-flight refresh, then publishes and records the digest of its own payload"
+}
+
 test_build_without_a_payload_generates_one() {
   local home out
   home=$(make_home build-generated)
@@ -1125,5 +1179,6 @@ test_refresh_never_reopens_a_session_the_captain_ended
 test_refresh_stamps_every_attempt_and_every_failure
 test_refresh_detach_returns_before_the_generation_finishes
 test_a_busy_refresh_yields_exactly_one_follow_up_publish
+test_build_waits_for_an_in_flight_refresh
 test_build_without_a_payload_generates_one
 test_serve_refuses_without_a_board
