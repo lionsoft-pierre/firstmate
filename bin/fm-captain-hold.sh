@@ -12,7 +12,7 @@
 # There is no separate decision type. A captain call is an ordinary backlog
 # task held for the captain through this script's mandatory `hold` subcommand,
 # and its identity is simply the task id. Older installs created derived
-# `<origin>-decision-<key>` identities through bin/fm-decision-hold.sh; those
+# `<origin>-decision-<key>` identities through the retired bin/fm-decision-hold.sh; those
 # rows are already plain task ids, so they keep working here unchanged, and
 # the legacy inputs noted below resolve them without a migration.
 # All backlog reads and mutations address the active home's configured data
@@ -146,7 +146,7 @@
 # Metadata compatibility: the attestation keeps the historical
 # `decisions_reviewed=1` and `decision_keys=` keys, and an inventory entry that
 # names no existing task resolves through the legacy `<origin>-decision-<entry>`
-# identity, so pre-collapse metadata written by fm-decision-hold.sh verifies
+# identity, so pre-collapse metadata written by the retired fm-decision-hold.sh verifies
 # unchanged. An entry that exists as a task id is always that task. On the
 # Beads backend an attested legacy markdown id that resolves to no task is
 # accepted through the migrated row fm-hold-migration produced, found by the
