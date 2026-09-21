@@ -53,7 +53,15 @@
 #            captain's opt-in; never calls lavish-axi, never binds or arms, and
 #            never reopens a session the captain ended - `/bearings lavish`
 #            (build) is the deliberate reopen. A concurrent refresh yields
-#            (`busy:`) rather than racing. With --best-effort every failure,
+#            (`busy:`) rather than racing, but first touches the pending
+#            marker state/.bearings-board-refresh-pending beside the digest;
+#            the lock holder checks that marker after its own publish, on the
+#            refreshed and the unchanged paths alike, and when present clears
+#            it and runs exactly one more generate-and-publish before
+#            releasing the lock, so a change that arrives mid-refresh reaches
+#            the board without waiting for the next cadence. Never a loop: a
+#            marker touched during that follow-up run waits for the next
+#            refresh. With --best-effort every failure,
 #            including the missing board, is recorded in the bounded
 #            state/.bearings-board-refresh.log and the exit status is 0, so no
 #            call site can change its own result by calling it. With --detach
@@ -118,7 +126,8 @@
 # every `<` in the compact JSON as the < string escape, so a payload string
 # containing "</script>" can never terminate the data block early.
 #
-# FM_BEARINGS_BOARD_TEMPLATE overrides the shipped template path (tests only).
+# FM_BEARINGS_BOARD_TEMPLATE overrides the shipped template path and
+# FM_BEARINGS_BOARD_GENERATOR overrides the payload generator (tests only).
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -352,8 +361,10 @@ await_source_owner() {  # <source-id>
   printf '%s\n' "${owner:-none}"
 }
 
+GENERATOR="${FM_BEARINGS_BOARD_GENERATOR:-$SCRIPT_DIR/fm-bearings-snapshot.sh}"
+
 generate_payload() {  # <dest.json>
-  "$SCRIPT_DIR/fm-bearings-snapshot.sh" --board > "$1"
+  "$GENERATOR" --board > "$1"
 }
 
 publish_board() {  # <data.json>
@@ -494,6 +505,7 @@ case "$REFRESH_LOG_MAX_BYTES" in ''|*[!0-9]*|0) REFRESH_LOG_MAX_BYTES=65536 ;; e
 REFRESH_DIGEST="$STATE/.bearings-board-digest"
 REFRESH_LOG="$STATE/.bearings-board-refresh.log"
 REFRESH_LOCK="$STATE/.bearings-board-refresh.lock"
+REFRESH_PENDING="$STATE/.bearings-board-refresh-pending"
 REFRESH_LOCK_HELD=0
 REFRESH_TMP=
 
@@ -531,7 +543,7 @@ payload_digest() {  # <payload.json>; the generated stamp is not a change
 }
 
 command_refresh() {
-  local best_effort=0 detach=0 arg board digest previous rc
+  local best_effort=0 detach=0 arg board
   for arg in "$@"; do
     case "$arg" in
       --best-effort) best_effort=1 ;;
@@ -556,6 +568,7 @@ command_refresh() {
   mkdir -p "$STATE" 2>/dev/null || fail "state directory is unavailable: $STATE"
   trap refresh_cleanup EXIT
   if ! fm_lock_try_acquire "$REFRESH_LOCK"; then
+    touch "$REFRESH_PENDING" 2>/dev/null || true
     printf 'busy: another refresh holds %s\n' "$REFRESH_LOCK"
     exit 0
   fi
@@ -563,8 +576,16 @@ command_refresh() {
   REFRESH_ATTEMPT=1
   REFRESH_TMP=$(umask 077; mktemp "$STATE/.bearings-board-payload.XXXXXX") \
     || fail "cannot stage the refreshed board payload"
-  rc=0
-  fm_run_timed "$REFRESH_TIMEOUT" "$SCRIPT_DIR/fm-bearings-snapshot.sh" --board \
+  refresh_once "$board"
+  if [ -e "$REFRESH_PENDING" ]; then
+    rm -f -- "$REFRESH_PENDING"
+    refresh_once "$board"
+  fi
+}
+
+refresh_once() {  # <board>; generate, compare, and publish one derived payload
+  local board=$1 rc=0 digest previous
+  fm_run_timed "$REFRESH_TIMEOUT" "$GENERATOR" --board \
     > "$REFRESH_TMP" 2> "$REFRESH_TMP.err" || rc=$?
   if [ "$rc" -eq 124 ]; then
     fail "board payload generation exceeded its ${REFRESH_TIMEOUT}-second deadline"
@@ -577,7 +598,7 @@ command_refresh() {
     touch "$REFRESH_DIGEST" 2>/dev/null || true
     write_checked_stamp || fail "cannot record the board check stamp"
     printf 'unchanged: %s\n' "$digest"
-    exit 0
+    return 0
   fi
   BOARD_STALE_PROBE=0 publish_board "$REFRESH_TMP" >/dev/null
   record_digest "$digest" || fail "cannot record the board digest"

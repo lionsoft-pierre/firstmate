@@ -1000,6 +1000,72 @@ SH
   pass "refresh --detach returns at once and the detached child publishes the board on its own"
 }
 
+# A change that arrives while a refresh is already deriving would otherwise
+# wait for the next cadence: the busy refresh leaves a pending marker and the
+# lock holder runs exactly one follow-up publish before releasing the lock. A
+# marker touched during that follow-up waits, so the holder can never loop.
+test_a_busy_refresh_yields_exactly_one_follow_up_publish() {
+  local home out i refresh_pid
+  home=$(make_home refresh-pending)
+  forbid_lavish "$home"
+  seed_backlog "$home"
+  write_valid_payload "$home/payload.json"
+  run_board "$home" publish "$home/payload.json" >/dev/null || fail "the seed publish failed"
+  # Each generation blocks on its own release file and derives a distinct
+  # payload, so every run is a real publish and every run is countable.
+  cat > "$home/fakebin/generator" <<SH
+#!/usr/bin/env bash
+n=\$(cat "$home/gen-count" 2>/dev/null || printf 0)
+n=\$((n + 1))
+printf '%s\\n' "\$n" > "$home/gen-count"
+: > "$home/gen-started-\$n"
+while [ ! -e "$home/gen-release-\$n" ]; do
+  [ "\$SECONDS" -lt 60 ] || exit 75
+  sleep 0.05
+done
+jq --arg n "\$n" '.charted += [{id: ("generation-" + \$n), repo: "sample", title: ("Generation " + \$n), reason: "", dispatchable: true}]' "$home/payload.json"
+SH
+  chmod +x "$home/fakebin/generator"
+  wait_for() {  # <path> <what>
+    local j=0
+    while [ ! -e "$1" ]; do
+      [ "$j" -lt 200 ] || fail "$2"
+      sleep 0.05
+      j=$((j + 1))
+    done
+  }
+  FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/generator" run_board "$home" refresh > "$home/first.out" 2>&1 &
+  refresh_pid=$!
+  wait_for "$home/gen-started-1" "the first refresh never started deriving"
+  out=$(FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/generator" run_board "$home" refresh) \
+    || fail "a refresh during a running refresh failed: $out"
+  case "$out" in busy:*) ;; *) fail "a refresh during a running refresh did not yield: $out" ;; esac
+  [ -e "$home/state/.bearings-board-refresh-pending" ] || fail "the busy refresh left no pending marker"
+  out=$(FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/generator" run_board "$home" refresh)
+  case "$out" in busy:*) ;; *) fail "a second busy refresh did not yield: $out" ;; esac
+  : > "$home/gen-release-1"
+  wait_for "$home/gen-started-2" "the lock holder ran no follow-up after finding the pending marker"
+  assert_absent "$home/state/.bearings-board-refresh-pending" "the follow-up run did not clear the pending marker first"
+  [ "$(board_charted_ids "$home")" = "sample-queued,generation-1" ] \
+    || fail "the first run did not publish its own payload before the follow-up: $(board_charted_ids "$home")"
+  out=$(FM_BEARINGS_BOARD_GENERATOR="$home/fakebin/generator" run_board "$home" refresh)
+  case "$out" in busy:*) ;; *) fail "a refresh during the follow-up did not yield: $out" ;; esac
+  : > "$home/gen-release-2"
+  wait "$refresh_pid" || fail "the first refresh failed: $(cat "$home/first.out")"
+  [ "$(grep -c '^refreshed: ' "$home/first.out")" = 2 ] \
+    || fail "the lock holder did not report exactly one follow-up publish: $(cat "$home/first.out")"
+  [ "$(board_charted_ids "$home")" = "sample-queued,generation-2" ] \
+    || fail "the follow-up run did not publish the newer payload: $(board_charted_ids "$home")"
+  i=0
+  while [ "$i" -lt 10 ]; do sleep 0.1; i=$((i + 1)); done
+  [ "$(cat "$home/gen-count")" = 2 ] || fail "the lock holder looped past one follow-up: $(cat "$home/gen-count") generations"
+  [ -e "$home/state/.bearings-board-refresh-pending" ] \
+    || fail "a marker touched during the follow-up did not wait for the next refresh"
+  assert_absent "$home/state/.bearings-board-refresh.lock" "the refresh lock was not released"
+  [ "$(lavish_calls "$home")" = 0 ] || fail "refresh reached lavish-axi"
+  pass "a busy refresh leaves a pending marker and the lock holder publishes exactly one follow-up"
+}
+
 test_build_without_a_payload_generates_one() {
   local home out
   home=$(make_home build-generated)
@@ -1058,5 +1124,6 @@ test_refresh_republishes_only_when_the_payload_changed
 test_refresh_never_reopens_a_session_the_captain_ended
 test_refresh_stamps_every_attempt_and_every_failure
 test_refresh_detach_returns_before_the_generation_finishes
+test_a_busy_refresh_yields_exactly_one_follow_up_publish
 test_build_without_a_payload_generates_one
 test_serve_refuses_without_a_board
