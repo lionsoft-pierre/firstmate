@@ -8,7 +8,10 @@
 //     landed:[{title,sub,badges,hidden}], charted:[{title,sub,badges,pickable,hidden}],
 //     repos:[chip labels], age, empty, more, error }
 // With a repo filter, the page's own window.fmBoard.filterRepo is applied
-// first, so what is reported is the filtered board.
+// first, so what is reported is the filtered board. `age` is the footer text;
+// with FM_BOARD_CHECKED_EPOCH set, the check stamp the live page would load
+// from its bearings-board-checked.js sibling is delivered through the page's
+// own window.__fmBoardChecked callback before the footer is read.
 import { readFileSync } from "node:fs";
 
 const html = readFileSync(process.argv[2], "utf8");
@@ -94,6 +97,10 @@ const script = html.slice(html.indexOf("<script>") + "<script>".length, html.las
 new Function(script)();
 const repoFilter = process.argv[3];
 if (repoFilter && globalThis.window.fmBoard) globalThis.window.fmBoard.filterRepo(repoFilter);
+const checkedEpoch = Number(process.env.FM_BOARD_CHECKED_EPOCH || "");
+if (checkedEpoch > 0 && typeof globalThis.window.__fmBoardChecked === "function") {
+  globalThis.window.__fmBoardChecked({ checked: checkedEpoch });
+}
 
 const badgesOf = (row) =>
   row.children

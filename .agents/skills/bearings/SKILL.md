@@ -91,6 +91,8 @@ For a contribution wake or linked-issue filing, go directly to Contribution foll
 
 `/bearings lavish` adds one deliverable beside the unchanged chat digest: the interactive fleet board, a myfirstmate-styled Lavish page where the captain answers Captain's Call items directly instead of replying in chat.
 The board is live and model-free: `bin/fm-bearings-snapshot.sh --board` derives its fm-bearings-board.v1 payload mechanically from the same snapshot (its header owns every derivation rule), `bin/fm-bearings-board.sh` owns every board mechanic (its header owns the publish, serve, build, and refresh contracts), and the watcher re-derives and republishes the board on its own cadence and on observed fleet change, so an open page reloads by itself and no agent ever composes board copy.
+That reload keeps every queued answer, which lives server-side, but loses a freeform answer the captain is still typing; this is an accepted tradeoff until phase 2's in-place refresh, which defers re-rendering a card the captain is editing, replaces the whole-page reload.
+The page footer reads "last change HH:MM UTC · checked N s ago": the last change is the payload's `generated` stamp, and the check comes from the sibling `bearings-board-checked.js` every refresh attempt rewrites, so a stale footer means the watcher is not refreshing rather than that the fleet is quiet.
 
 Run `bin/fm-bearings-board.sh build` once, with no payload argument.
 Its serve-first sequence generates the payload, publishes the board, establishes and verifies its Lavish session with `lavish-axi`, reopens an ended session when necessary, and only then binds the answer source and proves a live polling listener; use the session URL it prints in the chat digest.

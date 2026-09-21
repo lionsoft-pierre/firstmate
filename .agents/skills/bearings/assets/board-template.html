@@ -815,18 +815,54 @@ __FM_BEARINGS_BOARD_DATA__
   applyRepoFilter("");
   window.fmBoard = { repos: repos.slice(), filterRepo: applyRepoFilter };
 
-  /* data age: the payload's generated stamp restated as a relative age, so a
-     stale page reads as stale instead of as current */
+  /* footer: "last change" is the payload's generated stamp, which only
+     advances when the fleet changed because the refresh digest gate excludes
+     it, and "checked" is the epoch bin/fm-bearings-board.sh writes into the
+     sibling bearings-board-checked.js on every attempt that derived a payload,
+     changed or not. The sibling is loaded through a script tag with a
+     cache-busting query, because a fetch of a sibling is blocked for this
+     sandboxed origin-null page, and re-loaded every 30 s, so a dead watcher
+     reads as "checked N min ago" while a quiet fleet keeps reading current.
+     Only a rewrite of the board itself makes Lavish reload the whole page;
+     queued answers live server-side and survive that, but a freeform answer
+     still being typed is lost, an accepted tradeoff until phase 2's in-place
+     refresh defers re-rendering a card the captain is editing. */
   var ageNode = document.getElementById("bb-age");
+  var checkedEpoch = null;
+  function formatSince(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    if (s < 120) return s + " s ago";
+    var m = Math.round(s / 60);
+    if (m < 120) return m + " min ago";
+    return Math.round(m / 60) + " h ago";
+  }
   function renderAge() {
     var t = Date.parse(data.generated);
-    if (isNaN(t)) { ageNode.textContent = "data as of " + data.generated; return; }
-    var mins = Math.max(0, Math.round((Date.now() - t) / 60000));
-    ageNode.textContent = "data as of " + new Date(t).toISOString().slice(11, 19) + " UTC · " +
-      (mins < 1 ? "just now" : mins === 1 ? "1 min ago" : mins + " min ago");
+    var text = isNaN(t) ? "last change " + data.generated
+      : "last change " + new Date(t).toISOString().slice(11, 16) + " UTC";
+    if (checkedEpoch !== null) text += " · checked " + formatSince(Date.now() - checkedEpoch * 1000);
+    ageNode.textContent = text;
+  }
+  window.__fmBoardChecked = function (stamp) {
+    var epoch = stamp ? Number(stamp.checked) : NaN;
+    if (!isFinite(epoch) || epoch <= 0) return;
+    checkedEpoch = epoch;
+    renderAge();
+  };
+  function loadCheckedStamp() {
+    if (!document.head || typeof document.head.appendChild !== "function") return;
+    var tag = document.createElement("script");
+    tag.src = "./bearings-board-checked.js?t=" + Date.now();
+    tag.async = true;
+    tag.onload = tag.onerror = function () { if (tag.parentNode) tag.parentNode.removeChild(tag); };
+    document.head.appendChild(tag);
   }
   renderAge();
-  if (typeof window.setInterval === "function") window.setInterval(renderAge, 30000);
+  loadCheckedStamp();
+  if (typeof window.setInterval === "function") {
+    window.setInterval(loadCheckedStamp, 30000);
+    window.setInterval(renderAge, 5000);
+  }
   } catch (e) {
     renderBoardError("The board data could not be rendered");
   }

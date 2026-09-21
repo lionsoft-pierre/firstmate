@@ -959,7 +959,7 @@ remote_secondmate_teardown_locked() {
 
 if remote_secondmate_teardown_locked; then
   "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
-  "$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort >/dev/null 2>&1 || true
+  "$SCRIPT_DIR/fm-bearings-board.sh" refresh --detach >/dev/null 2>&1 || true
   exit 0
 else
   remote_teardown_rc=$?
@@ -3640,7 +3640,7 @@ fi
 # state directory. Do not let the side-band refresh recreate that retired home.
 if [ -d "$STATE" ]; then
   "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
-  "$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort >/dev/null 2>&1 || true
+  "$SCRIPT_DIR/fm-bearings-board.sh" refresh --detach >/dev/null 2>&1 || true
 fi
 if [ "$TEARDOWN_LEGACY_ACCEPTED" = 1 ]; then
   echo "teardown $ID complete (window $T, worktree $WT, legacy record accepted without spawn_gen: endpoint $TEARDOWN_LEGACY_ENDPOINT, incarnation $TEARDOWN_META_SPAWN_GEN)"

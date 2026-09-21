@@ -301,13 +301,27 @@ test_a_single_repo_board_shows_no_chips() {
   pass "a single-repo board shows no repo chips"
 }
 
-test_the_footer_states_the_data_age() {
+# The footer separates the two facts a captain needs: when the fleet last
+# changed (the payload's generated stamp, which the digest gate holds still on
+# a quiet fleet) and when the board was last verified current (the check stamp
+# the refresh writes beside the board, delivered through the page's own
+# callback exactly as the sibling script would deliver it).
+test_the_footer_states_the_last_change_and_the_last_check() {
   local home out
   home=$(make_home data-age)
   out=$(render_payload "$home" '{}')
-  printf '%s' "$out" | jq -e '.age | startswith("data as of 00:00:00 UTC · ") and endswith(" ago")' >/dev/null \
-    || fail "the footer did not restate the generated stamp as a data age: $out"
-  pass "the footer states when the data was generated and how old it is"
+  printf '%s' "$out" | jq -e '.age == "last change 00:00 UTC"' >/dev/null \
+    || fail "the footer did not restate the generated stamp as the last change before any check arrived: $out"
+  out=$(FM_BOARD_CHECKED_EPOCH=$(( $(date +%s) - 42 )) render_payload "$home" '{}')
+  printf '%s' "$out" | jq -e '.age | test("^last change 00:00 UTC · checked 4[0-9] s ago$")' >/dev/null \
+    || fail "the footer did not state the last check beside the last change: $out"
+  out=$(FM_BOARD_CHECKED_EPOCH=$(( $(date +%s) - 2700 )) render_payload "$home" '{}')
+  printf '%s' "$out" | jq -e '.age | test("^last change 00:00 UTC · checked 45 min ago$")' >/dev/null \
+    || fail "a stale check did not read as minutes ago: $out"
+  out=$(FM_BOARD_CHECKED_EPOCH=0 render_payload "$home" '{}')
+  printf '%s' "$out" | jq -e '.age == "last change 00:00 UTC"' >/dev/null \
+    || fail "an unusable check stamp changed the footer: $out"
+  pass "the footer states the last change and, once the check stamp arrives, the last check"
 }
 
 test_an_underway_row_leads_with_the_task_name_and_keeps_its_run_status
@@ -321,4 +335,4 @@ test_omitted_warnings_never_count_as_more_queued
 test_an_omitted_kind_keeps_the_existing_queued_rendering
 test_repo_chips_narrow_every_section_and_the_stat_strip
 test_a_single_repo_board_shows_no_chips
-test_the_footer_states_the_data_age
+test_the_footer_states_the_last_change_and_the_last_check

@@ -3456,6 +3456,39 @@ EOF2
   pass "a secondmate captain hold is carded under its home-prefixed key"
 }
 
+# A secondmate's queued row is keyed by its home, the decision-card convention,
+# so a same-named main row and secondmate row both survive the board's own
+# id dedup instead of the second one silently vanishing from Charted Next.
+test_board_projection_keys_secondmate_queued_rows_by_home() {
+  local home mate fakebin out
+  home=$(make_home board-charted)
+  mate="$TMP_ROOT/board-charted-home"
+  write_domain_alpha_fixture "$home" "$mate"
+  cat > "$home/data/backlog.md" <<'EOF2'
+## In flight
+
+## Queued
+- [ ] legal-release - Main legal release (repo: firstmate) (kind: ship) (since 2026-07-09)
+
+## Done
+EOF2
+  fakebin=$(make_fakebin "$home")
+  out=$(run "$home" "$fakebin" --json) || fail "the bearings model failed: $out"
+  printf '%s' "$out" | jq -e '
+    ([.gates[] | select(.id == "legal-release") | .owner] | sort) == ["(main)", "domain-alpha"]
+  ' >/dev/null || fail "the fixture did not produce a same-named main and secondmate queued row: $out"
+  out=$(run "$home" "$fakebin" --board) || fail "the board projection failed: $out"
+  printf '%s' "$out" | jq -e '
+    ([.charted[] | .id] | index("legal-release") != null and index("domain-alpha.legal-release") != null)
+    and ([.charted[] | .id] | unique | length) == (.charted | length)
+    and (.charted[] | select(.id == "legal-release")
+      | .title == "Main legal release" and .repo == "firstmate" and .dispatchable == true and .filed == "2026-07-09")
+    and (.charted[] | select(.id == "domain-alpha.legal-release")
+      | .title == "Release approval" and .repo == "sample" and .dispatchable == false)
+  ' >/dev/null || fail "a same-named secondmate queued row collapsed into the main row: $out"
+  pass "a secondmate queued row is keyed by its home so a same-named main row never hides it"
+}
+
 test_default_is_bounded_and_local_only
 test_toon_json_parity
 test_landed_includes_secondmate_home_merges
@@ -3498,3 +3531,4 @@ test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
 test_board_projection_is_machine_derived_and_valid
 test_board_projection_keys_secondmate_holds_by_home
+test_board_projection_keys_secondmate_queued_rows_by_home

@@ -690,9 +690,10 @@ if [ "$READ_ONLY" -eq 0 ]; then
   # session-start result. A context re-emit is not another session start.
   if [ "$REEMIT" -eq 0 ]; then
     "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
-    # The published fleet board is re-derived the same way; a home without
-    # a board is a silent no-op (bin/fm-bearings-board.sh refresh).
-    "$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort >/dev/null 2>&1 || true
+    # The published fleet board is re-derived by a detached child that
+    # returns at once, so it never sits in front of the digest; a home
+    # without a board is a silent no-op (bin/fm-bearings-board.sh refresh).
+    "$SCRIPT_DIR/fm-bearings-board.sh" refresh --detach >/dev/null 2>&1 || true
   fi
   # Every network call and the potentially slow inactive-outcome startup scan
   # are launched HERE, detached and bounded, so they run concurrently with the

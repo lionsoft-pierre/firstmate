@@ -86,14 +86,18 @@
 #     (kind other than captain) closes with `release`;
 #   - a task with a recorded PR (pr= metadata) whose current state is done
 #     and whose merge posture is not yolo becomes one merge card keyed
-#     merge.<task-id>, with `risk` copied from a risk= metadata value and
-#     "unrecorded" otherwise, and never while its detail already reads merged;
+#     merge.<task-id>, with `risk` fixed at "unrecorded" because no producer
+#     records a merge risk level yet, and never while its detail already
+#     reads merged;
 #   - Underway rows are in_flight rows with the full task title, Recently
 #     Landed rows are the landed rows with repo and PR URL, and Charted Next
 #     rows are the gates with the synthetic (main-inventory) and
 #     (return-catchup) rows, unavailable secondmate homes, and pending
-#     inventory reconciles typed `warning`; only a main-home queued row with
-#     no blocker and no hold is dispatchable.
+#     inventory reconciles typed `warning`; a main-home gate keeps its task
+#     id and a secondmate's queued row is keyed <mate>.<task-id>, the
+#     decision-card convention, so same-named rows in different homes never
+#     collapse into one; only a main-home queued row with no blocker and no
+#     hold is dispatchable.
 # --board implies --json, --all-in-flight, and --all-queued, lifts the
 # decisions bound, keeps the landed bounds, and validates its own output before
 # printing it: an invalid projection exits 2 rather than emitting a payload.
@@ -776,7 +780,7 @@ if [ "$BOARD" = 1 ]; then
        title: (($t.backlog.title // $t.id) | trunc(140)),
        detail: (($t.current_state.detail // "") | trunc(200)),
        pr_url: $t.pr.url,
-       risk: (if (($t.risk // "") | tostring) != "" then ($t.risk | tostring | trunc(40)) else "unrecorded" end),
+       risk: "unrecorded",
        options: [{value: "merge", label: "Merge now", hint: "Your explicit merge word for this exact PR"},
                  {value: "hold", label: "Not yet", hint: "Leave the PR open"}],
        allow_freeform: true, freeform_hint: "Or instruct in your own words"};
@@ -807,7 +811,7 @@ if [ "$BOARD" = 1 ]; then
       | (if $main then record($g.id) else null end) as $r
       | (if ($synthetic or $main) then null else mate($g.owner) end) as $m
       | (if $m == null then null else (first($m.queued[]? | select(.id == $g.id)) // null) end) as $mq
-      | {id: ($g.id | gsub("[()]"; "") | slugify),
+      | {id: ((if ($synthetic or $main) then $g.id else ($g.owner + "." + $g.id) end) | gsub("[()]"; "") | slugify),
          title: (((if $main then $r.title elif $mq != null then $mq.title else null end) // $g.title) | trunc(140)),
          repo: ((if $main then $r.repo else $mq.repo end) // null),
          reason: (if ($g.reason // "-") == "-" then "" else ($g.reason | trunc(200)) end),

@@ -12,7 +12,7 @@
 #   fm-bearings-board.sh build [<data.json>]
 #   fm-bearings-board.sh publish <data.json>
 #   fm-bearings-board.sh serve
-#   fm-bearings-board.sh refresh [--best-effort]
+#   fm-bearings-board.sh refresh [--best-effort | --detach]
 #   fm-bearings-board.sh path
 #
 # publish    Validate the payload, drop the Captain's Call cards whose subject
@@ -42,6 +42,9 @@
 #            lavish. With no payload argument it generates the payload itself
 #            through `fm-bearings-snapshot.sh --board`; an explicit payload is
 #            accepted for tests and diagnostics. Output starts with `board:`.
+#            It records the digest and the check stamp of the payload it
+#            published, so the watcher's next tick republishes nothing
+#            identical and the page the captain just opened is not reloaded.
 # refresh    Re-derive the payload and republish the board ONLY when the derived
 #            payload changed (its `generated` stamp excluded), so an open page
 #            reloads on real fleet change and never on the clock. Prints
@@ -52,12 +55,25 @@
 #            (build) is the deliberate reopen. A concurrent refresh yields
 #            (`busy:`) rather than racing. With --best-effort every failure,
 #            including the missing board, is recorded in the bounded
-#            state/.bearings-board-refresh.log and the exit status is 0, so the
-#            watcher, session start, spawn, teardown, PR check, and captain-hold
-#            call sites can never change their own result by calling it. The
-#            generation is bounded by FM_BOARD_REFRESH_TIMEOUT (default 60 s).
+#            state/.bearings-board-refresh.log and the exit status is 0, so no
+#            call site can change its own result by calling it. With --detach
+#            the best-effort refresh runs in a detached child (stdin from
+#            /dev/null, stdout and stderr to /dev/null, failures only in that
+#            log) and this command returns at once, which is how session
+#            start, spawn, teardown, the PR check, and the captain-hold hooks
+#            call it so none of them ever waits on a fleet snapshot; the
+#            watcher tracks its own child instead. The generation is bounded
+#            by FM_BOARD_REFRESH_TIMEOUT (default 60 s) inside the child.
 #            The digest lives in state/.bearings-board-digest; its mtime is the
-#            last-attempt stamp bin/fm-watch.sh's refresh cadence reads.
+#            last-attempt stamp bin/fm-watch.sh's refresh cadence reads, and
+#            every attempt, a failed one included, touches it, so a failing
+#            generation is retried on FM_BOARD_REFRESH_INTERVAL and never on
+#            every poll. Every attempt that derives a payload, changed or not,
+#            also rewrites the sibling .lavish/bearings-board-checked.js, one
+#            line of script carrying the epoch of that check, which the open
+#            page loads on its own timer to show how recently the board was
+#            verified current; a failed attempt leaves it alone so the footer
+#            ages instead of reading current.
 # path       Print the stable board path for this home.
 #
 # A LIVE SESSION IS PROVED, NEVER ASSUMED. `lavish-axi <file>` exits 0 even
@@ -134,7 +150,11 @@ usage() {
 # Under a best-effort refresh a failure is recorded in the bounded refresh log
 # and the exit status stays 0, so no call site's own result depends on it.
 BEST_EFFORT=0
+REFRESH_ATTEMPT=0
 fail() {
+  if [ "$REFRESH_ATTEMPT" -eq 1 ]; then
+    touch "$REFRESH_DIGEST" 2>/dev/null || true
+  fi
   if [ "$BEST_EFFORT" -eq 1 ]; then
     refresh_log_failure "$*"
     exit 0
@@ -144,6 +164,34 @@ fail() {
 }
 
 board_path() { printf '%s/.lavish/bearings-board.html\n' "$FM_HOME"; }
+checked_path() { printf '%s/.lavish/bearings-board-checked.js\n' "$FM_HOME"; }
+
+# The one-line sibling script the open page loads to learn when the board was
+# last verified current. Written atomically beside the board, which Lavish
+# serves fresh on every read and never treats as a page change.
+write_checked_stamp() {
+  local path tmp
+  path=$(checked_path)
+  tmp=$(umask 077; mktemp "${path%/*}/.checked.XXXXXX") || return 1
+  if ! printf 'window.__fmBoardChecked && window.__fmBoardChecked({checked: %s});\n' "$(date +%s)" > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if ! { chmod 0600 "$tmp" && mv -f -- "$tmp" "$path"; }; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+record_digest() {  # <digest>
+  local tmp
+  mkdir -p "$STATE" 2>/dev/null || return 1
+  tmp=$(umask 077; mktemp "$STATE/.bearings-board-digest.XXXXXX") || return 1
+  if ! { printf '%s\n' "$1" > "$tmp" && mv -f -- "$tmp" "$REFRESH_DIGEST"; }; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
 
 validate_payload() {  # <data.json>
   fm_bearings_board_validate "$1"
@@ -412,7 +460,7 @@ cleanup_generated_payload() {
 }
 
 command_build() {
-  local data=${1-}
+  local data=${1-} digest
   [ "$#" -le 1 ] || { usage >&2; exit 2; }
   if [ -z "$data" ]; then
     GENERATED_PAYLOAD=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-bearings-board-gen.XXXXXX") \
@@ -422,6 +470,9 @@ command_build() {
     data=$GENERATED_PAYLOAD
   fi
   publish_board "$data"
+  digest=$(payload_digest "$data") || fail "cannot digest the published board payload"
+  record_digest "$digest" || fail "cannot record the board digest"
+  write_checked_stamp || fail "cannot record the board check stamp"
   serve_board
 }
 
@@ -480,10 +531,11 @@ payload_digest() {  # <payload.json>; the generated stamp is not a change
 }
 
 command_refresh() {
-  local best_effort=0 arg board digest previous rc tmp
+  local best_effort=0 detach=0 arg board digest previous rc
   for arg in "$@"; do
     case "$arg" in
       --best-effort) best_effort=1 ;;
+      --detach) detach=1; best_effort=1 ;;
       *) usage >&2; exit 2 ;;
     esac
   done
@@ -493,8 +545,13 @@ command_refresh() {
     printf 'fm-bearings-board: no board is published for this home; run build first\n' >&2
     exit 3
   fi
+  if [ "$detach" -eq 1 ]; then
+    "$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort </dev/null >/dev/null 2>&1 &
+    exit 0
+  fi
   # From here every failure is a refresh failure: logged and swallowed under
-  # --best-effort, reported otherwise.
+  # --best-effort, reported otherwise, and always stamped on the digest so the
+  # watcher's cadence sees the attempt.
   BEST_EFFORT=$best_effort
   mkdir -p "$STATE" 2>/dev/null || fail "state directory is unavailable: $STATE"
   trap refresh_cleanup EXIT
@@ -503,6 +560,7 @@ command_refresh() {
     exit 0
   fi
   REFRESH_LOCK_HELD=1
+  REFRESH_ATTEMPT=1
   REFRESH_TMP=$(umask 077; mktemp "$STATE/.bearings-board-payload.XXXXXX") \
     || fail "cannot stage the refreshed board payload"
   rc=0
@@ -517,16 +575,13 @@ command_refresh() {
   previous=$(cat "$REFRESH_DIGEST" 2>/dev/null || true)
   if [ "$digest" = "$previous" ]; then
     touch "$REFRESH_DIGEST" 2>/dev/null || true
+    write_checked_stamp || fail "cannot record the board check stamp"
     printf 'unchanged: %s\n' "$digest"
     exit 0
   fi
   BOARD_STALE_PROBE=0 publish_board "$REFRESH_TMP" >/dev/null
-  tmp=$(umask 077; mktemp "$STATE/.bearings-board-digest.XXXXXX") \
-    || fail "cannot stage the board digest"
-  if ! { printf '%s\n' "$digest" > "$tmp" && mv -f -- "$tmp" "$REFRESH_DIGEST"; }; then
-    rm -f -- "$tmp"
-    fail "cannot record the board digest"
-  fi
+  record_digest "$digest" || fail "cannot record the board digest"
+  write_checked_stamp || fail "cannot record the board check stamp"
   printf 'refreshed: %s\n' "$board"
 }
 

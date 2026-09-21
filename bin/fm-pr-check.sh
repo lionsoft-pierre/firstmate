@@ -176,7 +176,8 @@ case "$READY_RC" in
   *) printf 'actionable: PR %s is registered but its ready line did not reach the parent channel (rc=%s)\n' "$URL" "$READY_RC" >&2 ;;
 esac
 # A recorded PR is a board-visible fact (a merge card once the task reads
-# done), so re-derive the published fleet board best-effort; a home without a
-# board is a silent no-op (bin/fm-bearings-board.sh refresh).
-"$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort >/dev/null 2>&1 || true
+# done), so re-derive the published fleet board through a detached child that
+# returns at once; a home without a board is a silent no-op
+# (bin/fm-bearings-board.sh refresh).
+"$SCRIPT_DIR/fm-bearings-board.sh" refresh --detach >/dev/null 2>&1 || true
 printf 'armed: state/%s.check.sh\n' "$ID"

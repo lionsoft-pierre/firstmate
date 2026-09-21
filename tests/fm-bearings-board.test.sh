@@ -856,7 +856,10 @@ test_refresh_refuses_without_a_board_and_stays_silent_best_effort() {
   case "$out" in *"no board is published"*) ;; *) fail "refresh did not name the missing board: $out" ;; esac
   out=$(run_board "$home" refresh --best-effort) || fail "a best-effort refresh without a board did not exit 0"
   [ -z "$out" ] || fail "a best-effort refresh without a board printed: $out"
+  out=$(run_board "$home" refresh --detach) || fail "a detached refresh without a board did not exit 0"
+  [ -z "$out" ] || fail "a detached refresh without a board printed: $out"
   assert_absent "$home/.lavish/bearings-board.html" "refresh created a board in a home that never opened one"
+  assert_absent "$home/.lavish/bearings-board-checked.js" "refresh stamped a check in a home that never opened a board"
   assert_absent "$home/state/.bearings-board-refresh.log" "a home without a board logged a refresh failure"
   [ "$(lavish_calls "$home")" = 0 ] || fail "refresh reached lavish-axi"
   pass "refresh refuses without a board, and is silent about it under --best-effort"
@@ -907,6 +910,96 @@ test_refresh_never_reopens_a_session_the_captain_ended() {
   pass "refresh republishes silently and never reopens a session the captain ended"
 }
 
+checked_epoch() {  # <home>
+  sed -n 's/.*{checked: \([0-9][0-9]*\)}.*/\1/p' "$1/.lavish/bearings-board-checked.js" 2>/dev/null
+}
+
+mtime_of() {  # <path>
+  python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime)' "$1"
+}
+
+# Every attempt that derives a payload stamps the sibling check script the
+# open page loads, and every attempt, a failed one included, touches the
+# digest so the watcher retries on its cadence rather than on every poll.
+test_refresh_stamps_every_attempt_and_every_failure() {
+  local home out first second third before after recorded
+  home=$(make_home refresh-stamps)
+  forbid_lavish "$home"
+  seed_backlog "$home"
+  write_valid_payload "$home/payload.json"
+  run_board "$home" publish "$home/payload.json" >/dev/null || fail "the seed publish failed"
+  assert_absent "$home/.lavish/bearings-board-checked.js" "publish alone stamped a check"
+  out=$(run_board "$home" refresh) || fail "the first refresh failed: $out"
+  first=$(checked_epoch "$home")
+  case "$first" in ''|*[!0-9]*) fail "a changed refresh did not stamp the check script: $(cat "$home/.lavish/bearings-board-checked.js" 2>/dev/null)" ;; esac
+  sleep 1.1
+  out=$(run_board "$home" refresh) || fail "the unchanged refresh failed: $out"
+  case "$out" in unchanged:*) ;; *) fail "an unchanged fleet was republished: $out" ;; esac
+  second=$(checked_epoch "$home")
+  [ "$second" -gt "$first" ] || fail "an unchanged refresh did not advance the check stamp: $first -> $second"
+  append_queued_row "$home" broken-row "A change that cannot be published"
+  before=$(mtime_of "$home/state/.bearings-board-digest")
+  recorded=$(cat "$home/state/.bearings-board-digest")
+  sleep 1.1
+  out=$(FM_BEARINGS_BOARD_TEMPLATE="$home/missing-template.html" run_board "$home" refresh --best-effort) \
+    || fail "a best-effort refresh whose publish failed did not exit 0"
+  [ -z "$out" ] || fail "a failed best-effort refresh printed: $out"
+  after=$(mtime_of "$home/state/.bearings-board-digest")
+  python3 -c 'import sys; sys.exit(0 if float(sys.argv[2]) > float(sys.argv[1]) else 1)' "$before" "$after" \
+    || fail "a failed refresh did not touch the digest as its last-attempt stamp"
+  [ "$(cat "$home/state/.bearings-board-digest")" = "$recorded" ] \
+    || fail "a failed refresh changed the recorded digest"
+  grep -q "board template is missing" "$home/state/.bearings-board-refresh.log" \
+    || fail "the failed refresh was not recorded in the refresh log: $(cat "$home/state/.bearings-board-refresh.log" 2>/dev/null)"
+  third=$(checked_epoch "$home")
+  [ "$third" = "$second" ] || fail "a failed refresh stamped the check script: $second -> $third"
+  [ "$(board_charted_ids "$home")" = "seeded-row" ] \
+    || fail "a failed refresh changed the published board: $(board_charted_ids "$home")"
+  out=$(run_board "$home" refresh) || fail "the recovery refresh failed: $out"
+  case "$out" in refreshed:*) ;; *) fail "the recovery refresh did not republish the pending change: $out" ;; esac
+  [ "$(board_charted_ids "$home")" = "broken-row,seeded-row" ] \
+    || fail "the recovery refresh did not carry the pending row: $(board_charted_ids "$home")"
+  [ "$(lavish_calls "$home")" = 0 ] || fail "refresh reached lavish-axi"
+  pass "refresh stamps the check on every derived attempt and touches the digest on every failure"
+}
+
+# The non-watcher call sites hand the refresh to a detached child, so a slow
+# generation never sits in front of session start, a captain answer, a spawn,
+# a teardown, or a PR check. The one-shot slow jq stands in for a slow fleet.
+test_refresh_detach_returns_before_the_generation_finishes() {
+  local home out started elapsed real_jq i
+  home=$(make_home refresh-detach)
+  forbid_lavish "$home"
+  seed_backlog "$home"
+  write_valid_payload "$home/payload.json"
+  run_board "$home" publish "$home/payload.json" >/dev/null || fail "the seed publish failed"
+  real_jq=$(command -v jq)
+  cat > "$home/fakebin/jq" <<SH
+#!/usr/bin/env bash
+if [ -e "$home/slow-once" ]; then rm -f "$home/slow-once"; sleep 2; fi
+exec "$real_jq" "\$@"
+SH
+  chmod +x "$home/fakebin/jq"
+  : > "$home/slow-once"
+  started=$(python3 -c 'import time; print(time.time())')
+  out=$(run_board "$home" refresh --detach) || fail "a detached refresh did not exit 0: $out"
+  elapsed=$(python3 -c 'import sys,time; print(time.time() - float(sys.argv[1]))' "$started")
+  [ -z "$out" ] || fail "a detached refresh printed: $out"
+  python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 1.5 else 1)' "$elapsed" \
+    || fail "a detached refresh waited ${elapsed}s for the generation instead of returning at once"
+  i=0
+  while [ "$(board_charted_ids "$home")" != "seeded-row" ] || [ ! -s "$home/state/.bearings-board-digest" ] \
+    || [ -z "$(checked_epoch "$home")" ]; do
+    [ "$i" -lt 300 ] || fail "the detached child never republished and stamped the board: $(board_charted_ids "$home")"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  assert_absent "$home/slow-once" "the detached child did not run the generation"
+  assert_absent "$home/state/.bearings-board-refresh.log" "the detached child logged a failure: $(cat "$home/state/.bearings-board-refresh.log" 2>/dev/null)"
+  [ "$(lavish_calls "$home")" = 0 ] || fail "the detached refresh reached lavish-axi"
+  pass "refresh --detach returns at once and the detached child publishes the board on its own"
+}
+
 test_build_without_a_payload_generates_one() {
   local home out
   home=$(make_home build-generated)
@@ -920,7 +1013,11 @@ test_build_without_a_payload_generates_one() {
       and (.charted | length) == 1
       and (.charted[0] | .id == "seeded-row" and .repo == "sample" and .dispatchable == true and .filed == "2026-08-01")
   ' >/dev/null || fail "the generated board does not reflect the seeded backlog"
-  pass "build derives its own payload when none is given"
+  [ -s "$home/state/.bearings-board-digest" ] || fail "build recorded no digest for the payload it published"
+  [ -n "$(checked_epoch "$home")" ] || fail "build did not stamp the check script"
+  out=$(run_board "$home" refresh) || fail "the refresh after build failed: $out"
+  case "$out" in unchanged:*) ;; *) fail "the refresh after build republished an identical board: $out" ;; esac
+  pass "build derives its own payload when none is given and records its digest"
 }
 
 test_serve_refuses_without_a_board() {
@@ -959,5 +1056,7 @@ test_publish_writes_the_board_without_lavish
 test_refresh_refuses_without_a_board_and_stays_silent_best_effort
 test_refresh_republishes_only_when_the_payload_changed
 test_refresh_never_reopens_a_session_the_captain_ended
+test_refresh_stamps_every_attempt_and_every_failure
+test_refresh_detach_returns_before_the_generation_finishes
 test_build_without_a_payload_generates_one
 test_serve_refuses_without_a_board

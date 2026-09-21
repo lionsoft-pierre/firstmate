@@ -123,16 +123,45 @@ pass "the board build reopens a captain-ended session against real lavish-axi in
 
 # THE VENDOR BEHAVIORS THE LIVE BOARD LEANS ON. bin/fm-bearings-board.sh refresh
 # rewrites the board file atomically and calls nothing else, so the open page
-# must be reloaded by the server's own file watcher, and a sibling file beside
-# the board must be served fresh on every read.
-printf 'gen-1\n' > "$LAB/.lavish/probe.txt"
-[ "$(curl -fsS "$base/artifact/$key/probe.txt")" = gen-1 ] \
-  || fail "lavish-axi ${VERSION:-version-unknown} does not serve a sibling file beside the board"
-printf 'gen-2\n' > "$LAB/.lavish/.probe.tmp"
-mv -f "$LAB/.lavish/.probe.tmp" "$LAB/.lavish/probe.txt"
-[ "$(curl -fsS "$base/artifact/$key/probe.txt")" = gen-2 ] \
-  || fail "lavish-axi ${VERSION:-version-unknown} served a stale sibling file after an atomic rewrite"
-pass "lavish-axi ${VERSION:-version-unknown} serves sibling files fresh on every read"
+# must be reloaded by the server's own file watcher; and every attempt that
+# derives a payload rewrites the sibling bearings-board-checked.js the page
+# loads through a script tag, so that sibling must be served fresh on every
+# read through the artifact route WITHOUT the page being reloaded for it.
+printf '# Live guard home\n' > "$LAB/AGENTS.md"
+cat > "$LAB/data/backlog.md" <<'EOF2'
+## In flight
+
+## Queued
+- [ ] guard-row - Guard queued row (repo: sample) (kind: ship) (since 2026-08-01)
+
+## Done
+EOF2
+checked_epoch() {
+  curl -fsS "$base/artifact/$key/bearings-board-checked.js?t=$(date +%s)-$RANDOM" \
+    | sed -n 's/.*{checked: \([0-9][0-9]*\)}.*/\1/p'
+}
+first=$(checked_epoch)
+case "$first" in ''|*[!0-9]*) fail "lavish-axi ${VERSION:-version-unknown} does not serve the check stamp beside the board: $(curl -sS "$base/artifact/$key/bearings-board-checked.js")" ;; esac
+# The first refresh replaces the hand-written guard payload with the derived
+# one, which is a real board change; the second finds the fleet unchanged and
+# must still advance the check stamp without touching the page.
+run_board refresh >/dev/null 2>&1 || fail "the guard board refresh failed: $(cat "$LAB/state/.bearings-board-refresh.log" 2>/dev/null)"
+sleep 1.5
+curl -sN --max-time 20 "$base/events/$key" > "$LAB/events.log" 2>/dev/null &
+EVENTS_PID=$!
+sleep 1.1
+out=$(run_board refresh 2>&1) || fail "the unchanged guard board refresh failed: $out"
+case "$out" in unchanged:*) ;; *) fail "the second refresh of an unchanged fleet republished the board: $out" ;; esac
+second=$(checked_epoch)
+[ "$second" -gt "$first" ] 2>/dev/null \
+  || fail "lavish-axi ${VERSION:-version-unknown} served a stale check stamp after a refresh: $first -> $second"
+sleep 1
+kill "$EVENTS_PID" >/dev/null 2>&1 || true
+wait "$EVENTS_PID" >/dev/null 2>&1 || true
+EVENTS_PID=''
+grep -q '^event: reload' "$LAB/events.log" \
+  && fail "lavish-axi ${VERSION:-version-unknown} reloaded the open board when only the check stamp beside it changed; the footer's script-tag poll must be revisited"
+pass "lavish-axi ${VERSION:-version-unknown} serves the check stamp fresh on every read without reloading the page"
 
 curl -sN --max-time 20 "$base/events/$key" > "$LAB/events.log" 2>/dev/null &
 EVENTS_PID=$!

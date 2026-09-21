@@ -59,13 +59,15 @@
 # model-free board generator (`bin/fm-bearings-snapshot.sh --board`) cards the
 # call with those exact choices and no prose authoring. A value is a slug and
 # never the reserved `reconcile`; the recommendation must name one of the given
-# values. A re-hold that passes options replaces the previous option lines,
-# while one that passes none keeps whatever lines are already recorded, and
-# `answer` leaves them in place as part of the record. Every successful hold,
-# answer, batch of answers, and reconcile outcome also refreshes the published
-# fleet board best-effort through `bin/fm-bearings-board.sh refresh`, which is
-# a silent no-op in a home that never opened the board and never changes this
-# command's result.
+# values. A re-hold that passes options replaces the previous option lines, an
+# active re-hold that passes none keeps whatever lines are already recorded,
+# and a new hold on a task that is no longer held drops them, so a later
+# question never inherits an earlier one's choices; `answer` leaves them in
+# place as part of the record. Every successful hold, answer, batch of
+# answers, and reconcile outcome also refreshes the published fleet board
+# through `bin/fm-bearings-board.sh refresh --detach`, which hands the work to
+# a detached best-effort child and returns at once, is a silent no-op in a
+# home that never opened the board, and never changes this command's result.
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
@@ -788,6 +790,9 @@ write_hold_set_stamp() {  # <task-id> <shown-body> <timestamp> <preserve-existin
       $'\n\n'*) body=${body#$'\n\n'} ;;
       $'\n'*) body=${body#$'\n'} ;;
     esac
+  fi
+  if [ "$preserve" != 1 ]; then
+    body=$(printf '%s\n' "$body" | grep -v -e '^Option: ' -e '^Recommend: ' | sed -e '/./,$!d' || true)
   fi
   new_body=$(printf 'Captain hold set: %s' "$hold_set")
   if [ -n "$body" ]; then
@@ -1998,13 +2003,15 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
   exit 2
 }
 
-# Every durable change to a captain call re-derives the published fleet board,
-# best-effort and silent: bin/fm-bearings-board.sh refresh is a no-op in a home
-# that never opened the board, and its outcome never changes this command's
-# result. `answers` refreshes once after its batch rather than once per row.
+# Every durable change to a captain call re-derives the published fleet board
+# through a detached best-effort child that returns at once, so the keyed
+# intake never waits on a fleet snapshot: bin/fm-bearings-board.sh refresh is a
+# no-op in a home that never opened the board, and its outcome never changes
+# this command's result. `answers` refreshes once after its batch rather than
+# once per row.
 refresh_board_best_effort() {
   [ "${FM_CAPTAIN_HOLD_BOARD_REFRESH:-1}" = 1 ] || return 0
-  "$SCRIPT_DIR/fm-bearings-board.sh" refresh --best-effort >/dev/null 2>&1 || true
+  "$SCRIPT_DIR/fm-bearings-board.sh" refresh --detach >/dev/null 2>&1 || true
 }
 
 case "${1:-}" in

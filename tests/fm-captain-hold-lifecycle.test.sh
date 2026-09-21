@@ -4053,6 +4053,43 @@ test_hold_options_are_recorded_and_carded() {
   pass "hold records the captain's choices, replaces them on re-hold, and refuses invalid ones"
 }
 
+# An answer keeps the option lines in the record, so a later question on the
+# same task must not inherit the earlier question's choices: a new hold on a
+# task that is no longer held drops them, while an active re-hold keeps them.
+test_a_new_hold_drops_the_previous_options() {
+  local home out show
+  home=$(make_home hold-options-reset)
+  tasks_in "$home" add ship-call "Ship the cutover" --kind ship --repo sample >/dev/null 2>&1 \
+    || fail "could not seed the gated work item"
+  run_captain "$home" hold ship-call --reason "captain window choice pending" \
+    --option now="Cut over now" --option friday="Wait for Friday" --recommend friday >/dev/null \
+    || fail "the first hold with options was refused"
+  printf 'Friday it is.\n' > "$home/pick.txt"
+  run_captain "$home" answer ship-call --decision-file "$home/pick.txt" --release >/dev/null \
+    || fail "answer --release failed on the held work item"
+  show=$(tasks_in "$home" show ship-call --full)
+  assert_contains "$show" "Option: now = Cut over now" "the answer did not keep the option lines in the record"
+  run_captain "$home" hold ship-call --reason "captain rollback call pending" >/dev/null \
+    || fail "a new hold without options was refused"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" "$BEARINGS" --board) \
+    || fail "the board projection failed: $out"
+  printf '%s' "$out" | jq -e '
+    .captains_call[] | select(.key == "ship-call")
+      | .about == "captain rollback call pending" and (.options | length) == 0
+        and (has("recommend_value") | not) and .allow_freeform == true and .close == "release"
+  ' >/dev/null || fail "a new hold inherited the answered question's options: $out"
+  run_captain "$home" hold ship-call --reason "captain rollback call pending" --option revert="Revert it" >/dev/null \
+    || fail "an active re-hold with options was refused"
+  run_captain "$home" hold ship-call --reason "captain rollback call pending" >/dev/null \
+    || fail "an active re-hold without options was refused"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" "$BEARINGS" --board)
+  printf '%s' "$out" | jq -e '.captains_call[] | select(.key == "ship-call") | [.options[].value] == ["revert"]' \
+    >/dev/null || fail "an active re-hold without options dropped the current ones: $out"
+  pass "a new hold after an answer drops the previous options while an active re-hold keeps them"
+}
+
 test_deferral_leaves_captains_call_until_due
 test_out_of_band_close_is_recordable
 test_visual_review_uses_shared_completion_owner
@@ -4099,3 +4136,4 @@ test_verify_resolves_a_pre_collapse_key_through_its_derived_marker
 test_captain_hold_mutations_address_the_beads_backend
 test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
 test_hold_options_are_recorded_and_carded
+test_a_new_hold_drops_the_previous_options
