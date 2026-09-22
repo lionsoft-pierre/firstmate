@@ -1218,9 +1218,11 @@ fm_firstmate_root_home() {
 # inside it. A firstmate home is itself a git checkout - the primary checkout
 # for the root home, a leased worktree for a secondmate - so a pool nested in
 # one would put project worktrees, firstmate's own included, inside the working
-# tree firstmate operates from. It sits under the operator's Treehouse root when
-# that is set to an absolute path, and under the home directory otherwise, so an
-# operator who moved Treehouse's storage keeps these pools with it.
+# tree firstmate operates from. It sits under TREEHOUSE_ROOT when the environment
+# sets it to an absolute path, and under the home directory otherwise. Only that
+# environment variable is followed: a root set in Treehouse's own config file or
+# in a repo's treehouse.toml is overridden by the --root this value feeds, so
+# config/treehouse-root is the way to place a home's pools anywhere else.
 #
 # config/treehouse-root overrides the whole path with an absolute directory.
 # Pointing two homes at one root re-creates the sharing described above;
@@ -1237,7 +1239,10 @@ fm_treehouse_root() {  # [home] [config-dir]
   home=$(CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || return 1
   [ -n "$config" ] || config=${FM_CONFIG_OVERRIDE:-$home/config}
   if [ -f "$config/treehouse-root" ] && [ ! -L "$config/treehouse-root" ]; then
-    configured=$(tr -d '[:space:]' < "$config/treehouse-root" 2>/dev/null || true)
+    configured=
+    IFS= read -r configured < "$config/treehouse-root" 2>/dev/null || true
+    configured=${configured#"${configured%%[![:space:]]*}"}
+    configured=${configured%"${configured##*[![:space:]]}"}
     if [ -n "$configured" ]; then
       case "$configured" in
         /*) printf '%s\n' "$configured"; return 0 ;;

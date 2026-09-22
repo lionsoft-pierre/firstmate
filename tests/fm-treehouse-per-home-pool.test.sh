@@ -84,6 +84,12 @@ test_each_home_resolves_its_own_root_outside_itself() {
   [ "$root_a" = "$world/configured-root" ] \
     || fail "config/treehouse-root did not override the derived root: $root_a"
 
+  printf '  %s  \n' "$world/My Pools" > "$config/treehouse-root"
+  root_a=$(treehouse_root_for "$world/homeA" "$config") \
+    || fail "an absolute config/treehouse-root containing a space was refused"
+  [ "$root_a" = "$world/My Pools" ] \
+    || fail "config/treehouse-root with a space did not come back byte-identical: $root_a"
+
   printf 'pools\n' > "$config/treehouse-root"
   if treehouse_root_for "$world/homeA" "$config" >/dev/null 2>&1; then
     fail "a relative config/treehouse-root was accepted instead of refused"
