@@ -1,0 +1,17 @@
+### step 1: home A spawns a1 (grows a pool slot from A's clone), then tears down (slot now FREE)
+warning: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-perhome-e2e.T4ePaQ/homeA/data/a1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned a1 harness=sh kind=ship mode=no-mistakes yolo=off window=fm-lab-fm-perhome-e2e-20454-8062:w1:p2 worktree=/Users/pierre/.treehouse/app-4589cc/1/app
+fm-spawn exit=0
+home A task a1 worktree: /Users/pierre/.treehouse/app-4589cc/1/app
+  backed by clone:       homeA/projects/app/.git
+  => OWN clone of home A
+teardown a1 exit=0
+### step 2: home B spawns b1 into its OWN clone of the same repo
+warning: /private/var/folders/xw/f__w5cds1j99590_s6gl4fy80000gn/T/fm-perhome-e2e.T4ePaQ/homeB/data/b1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned b1 harness=sh kind=ship mode=no-mistakes yolo=off window=fm-lab-fm-perhome-e2e-20454-8062:w2:p2 worktree=/Users/pierre/.treehouse/app-4589cc/1/app
+fm-spawn exit=0
+home B task b1 worktree: /Users/pierre/.treehouse/app-4589cc/1/app
+  backed by clone:       homeA/projects/app/.git
+  => FOREIGN clone (not home B's)
+### pool directories on disk
+teardown b1 exit=0

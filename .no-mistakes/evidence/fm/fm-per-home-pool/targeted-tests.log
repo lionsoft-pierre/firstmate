@@ -1,0 +1,57 @@
+=== fm-treehouse-per-home-pool
+ok - each home resolves its own absolute pool root, stable across calls and outside the home
+ok - config/treehouse-root overrides the derived root and refuses a non-absolute value
+ok - fm-spawn types this home's pool root into the pane that runs the acquisition
+ok - fm-spawn refuses a pool slot backed by another home's clone instead of launching into it
+ok - real treehouse: one shared root hands home B a worktree of home A's clone
+ok - real treehouse: the acquisition fm-spawn types lands in this home's own clone
+exit=
+=== fm-secondmate-liveness
+ok - fm_backend_tmux_agent_state: rejects malformed targets before probing tmux
+ok - fm_backend_herdr_agent_state: preserves missing/no-agent/live/unknown husk behavior
+ok - fm_backend_agent_state: routes tmux/Herdr and keeps Zellij unverified
+ok - sweep: a confirmed-dead secondmate endpoint is killed and respawned
+ok - sweep: an already-live secondmate is untouched and distinguishable in verbose diagnostics
+ok - sweep: an authoritatively missing Pi secondmate window is relaunched
+ok - sweep: an authoritatively missing pi-signed secondmate window is relaunched
+ok - sweep: an existing ambiguous Pi process prevents duplicate recovery
+ok - sweep: transient target unreadability never licenses recovery
+ok - sweep: failed relaunch diagnostics distinguish a confidently missing endpoint
+ok - sweep: an unverified harness blocks recovery with a concrete diagnostic
+ok - sweep: idempotent by construction - a live secondmate is never re-touched on a later run
+ok - sweep: skipped entirely under FM_BOOTSTRAP_DETECT_ONLY=1, exactly like the other mutating sweeps
+ok - sweep: a silent no-op with no kind=secondmate meta present (a secondmate home's own natural scoping)
+# all fm-secondmate-liveness tests passed
+exit=
+=== fm-secondmate-safety
+ok - force teardown validates subhome before child cleanup
+ok - forced teardown refuses a non-directory descendant state path
+ok - forced teardown refuses a symlinked descendant state path
+ok - forced teardown locks a descendant whose state directory was absent
+ok - forced teardown refuses while a fresh task is being published in the home
+ok - a fresh spawn refuses to publish while a forced teardown owns the task set
+ok - a fresh remote secondmate spawn refuses while the task set is owned
+ok - force teardown refuses child worktrees inside the active home
+ok - force teardown refuses child worktrees inside the firstmate repo
+ok - force teardown refuses unregistered child worktree paths
+ok - secondmate teardown path-boundary matrix refuses unmarked/ancestor/active-descendant/repo-descendant homes
+ok - idle kind=secondmate pane is healthy and not stale
+ok - secondmate charter brief is idle by default and does not self-initiate work
+ok - fm-backlog-handoff aborts atomically on unmatched, in-flight, and unregistered targets
+ok - fm-backlog-handoff refuses Done items under whitespace section headings and unsafe homes
+exit=
+=== fm-tangle-guard
+ok - fm_primary_tangle_branch: feature branch alarms; default/detached/non-git stay silent
+ok - fm-guard: bordered tangle banner fires only for a feature branch and suppresses repair commands in read-only mode
+ok - fm-bootstrap: TANGLE problem line fires only for a feature branch and suppresses repair commands in detect-only mode
+ok - fm-brief: ship brief asserts worktree isolation before the branch step
+ok - fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree
+ok - fm-spawn: appends windows by session-colon, pins the name, and targets the window id
+exit=
+=== fm-backend-autodetect-smoke
+ok - real herdr: fm-spawn.sh auto-detects verified herdr from HERDR_ENV=1 (no explicit config) without an opt-out steer
+ok - real herdr: auto-detected spawn records backend=herdr and herdr_session/workspace/tab/pane fields in meta
+ok - real herdr: the auto-detected spawn's launch command actually ran in the herdr pane
+ok - real herdr: teardown completes the auto-detected spawn/teardown cycle (meta cleared, pane closed)
+ok - real herdr: isolated lab session removed and default fleet session unchanged
+exit=
