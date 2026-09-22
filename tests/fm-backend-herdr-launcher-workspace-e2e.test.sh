@@ -159,10 +159,12 @@ LAB_SOCKET=$(lab session list --json 2>/dev/null \
 # layout below opts out explicitly rather than depending on that default.
 PRIMARY_HOME="$TMP_ROOT/primary-home"
 mkdir -p "$PRIMARY_HOME/state" "$PRIMARY_HOME/config"
+printf '%s\n' "$TMP_ROOT/pool/primary" > "$PRIMARY_HOME/config/treehouse-root"
 printf 'off\n' > "$PRIMARY_HOME/config/herdr-presentation-spaces"
 SM_ID="lwsm1"
 SM_HOME="$TMP_ROOT/secondmate-home"
 mkdir -p "$SM_HOME/state" "$SM_HOME/config" "$SM_HOME/projects" "$SM_HOME/bin" "$SM_HOME/data"
+printf '%s\n' "$TMP_ROOT/pool/sm" > "$SM_HOME/config/treehouse-root"
 printf 'off\n' > "$SM_HOME/config/herdr-presentation-spaces"
 printf '# scratch secondmate home AGENTS.md placeholder\n' > "$SM_HOME/AGENTS.md"
 printf '%s\n' "$SM_ID" > "$SM_HOME/.fm-secondmate-home"
@@ -171,6 +173,7 @@ printf 'trivial e2e secondmate charter: nothing to do.\n' > "$SM_HOME/data/chart
 SM2_ID="lwsm2"
 SM2_HOME="$TMP_ROOT/secondmate-home-2"
 mkdir -p "$SM2_HOME/state" "$SM2_HOME/config" "$SM2_HOME/projects" "$SM2_HOME/bin" "$SM2_HOME/data"
+printf '%s\n' "$TMP_ROOT/pool/sm2" > "$SM2_HOME/config/treehouse-root"
 printf 'off\n' > "$SM2_HOME/config/herdr-presentation-spaces"
 printf '# scratch secondmate home AGENTS.md placeholder\n' > "$SM2_HOME/AGENTS.md"
 printf '%s\n' "$SM2_ID" > "$SM2_HOME/.fm-secondmate-home"
@@ -181,6 +184,7 @@ printf 'trivial e2e secondmate charter: nothing to do.\n' > "$SM2_HOME/data/char
 # real Herdr while the opted-out homes above assert the flat layout in isolation.
 PRES_HOME="$TMP_ROOT/presentation-home"
 mkdir -p "$PRES_HOME/state" "$PRES_HOME/config"
+printf '%s\n' "$TMP_ROOT/pool/pres" > "$PRES_HOME/config/treehouse-root"
 : > "$PRES_HOME/config/herdr-presentation-spaces"
 
 write_ship_brief() {  # <file> <id>

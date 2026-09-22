@@ -49,6 +49,7 @@ config/wedge-defer-parked-gate  optional presence flag opting this home into the
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see "Watched tool updates" below
+config/treehouse-root  optional absolute directory overriding this home's Treehouse worktree-pool root; LOCAL, gitignored, and NOT inherited by secondmate homes, which each need their own; a non-absolute value is refused rather than guessed; see "Worktree pool root" below
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
@@ -132,6 +133,16 @@ The inventory above names each file and its owner; wake, watcher, away-mode, and
 `docs/sessionstart-nudge.md` owns the native session-open adapter tiers that run or nudge the digest command, and the source routing between them.
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
+
+## Worktree pool root (config/treehouse-root)
+
+Every disposable worker copy, and every home leased for a secondmate, is a slot in a Treehouse pool, and those pools live OUTSIDE the home.
+Treehouse keys a pool by repository identity and shares every pool under one root across all the checkouts that reach it, so two homes with their own clones of one repository under a single root are handed each other's slots; `bin/fm-wake-lib.sh`'s `fm_treehouse_root` owns that reasoning and the exact derivation.
+Each home therefore gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise.
+An absolute path in `config/treehouse-root` replaces that default for this home; pointing two homes at one path re-creates the sharing, and `bin/fm-spawn.sh` then refuses the foreign slot instead of starting a worker in another home's clone.
+
+Homes and pools that already exist keep working and are never migrated, moved, or deleted: a pool grown under an earlier root stays where it is, and returning a slot resolves its pool from the worktree path rather than from any configured root.
+A home whose new root has no pool yet simply grows one from its own clone on the next spawn.
 
 ## Calm preference (config/calm)
 
@@ -1194,6 +1205,7 @@ FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_TASK_ID=             # internal task-worker marker fm-spawn.sh exports into ship and scout panes, never set by hand; bin/fm-test-run.sh refuses to execute in the repository primary checkout while it is set
+TREEHOUSE_ROOT=          # optional absolute base the per-home Treehouse pool roots are derived under; a relative value is ignored for that derivation; see "Worktree pool root"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline

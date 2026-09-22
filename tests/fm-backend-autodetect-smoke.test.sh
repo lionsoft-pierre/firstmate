@@ -96,6 +96,9 @@ mkdir -p "$STATE" "$DATA/$ID" "$CONFIG"
 # Backend auto-detection is what is under test here, so opt out of the default-on
 # presentation projection and keep the assertions on the flat per-home workspace.
 printf 'off\n' > "$CONFIG/herdr-presentation-spaces"
+# Keep the pool this real spawn grows inside the throwaway root, not the
+# developer's own (docs/configuration.md "Worktree pool root").
+printf '%s\n' "$TMP_ROOT/pool" > "$CONFIG/treehouse-root"
 cat > "$DATA/$ID/brief.md" <<'EOF'
 # Task
 ## Captain's intent

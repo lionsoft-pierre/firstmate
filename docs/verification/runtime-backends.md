@@ -107,6 +107,43 @@ A single-process harness has no descendant that adds a distinct verdict, which i
 The portable regression pins every half without any harness installed: `tests/fm-harness-precedence.test.sh` asserts that this two-process topology decides at comm strength, that the descent probe reaches a strength the top-of-session probe cannot, that a sibling branch answering a foreign harness contributes no verdict, that a foreign args-only verdict at the deepest vantage leaves the comm-strength identity intact, and that equal-depth ties choose the comm-strength leaf regardless of process ordering.
 The run did not reach `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, or `muse`, which were not installed, and stopped at the same pre-existing liveness failure for `cursor` 3.18.9, whose resolved binary on that machine is the editor rather than `cursor-agent`; those adapters are unverified by this run.
 
+## Treehouse worktree pools
+
+Treehouse is the worktree provider for every session-provider backend (tmux, herdr, zellij, cmux); Orca provides its own worktrees and never calls it.
+Two facts about pool allocation are load-bearing for the per-home pool root, and both are version-scoped to the treehouse CLI.
+
+A pool is keyed by repository identity and shared by every checkout that reaches its root, so under one root a home is handed a free slot that is a linked worktree of ANOTHER home's clone, and under its own root it is not.
+Verified on 2026-09-22 with treehouse v2.2.0 on Darwin 27.0.0, through the portable regression, which builds two homes with identically named clones of one origin and drives the real binary:
+
+```sh
+bin/fm-test-run.sh tests/fm-treehouse-per-home-pool.test.sh
+```
+
+Observed output:
+
+```text
+ok - each home resolves its own absolute pool root, stable across calls and outside the home
+ok - config/treehouse-root overrides the derived root and refuses a non-absolute value
+ok - fm-spawn types this home's pool root into the pane that runs the acquisition
+ok - fm-spawn refuses a pool slot backed by another home's clone instead of launching into it
+ok - real treehouse: one shared root hands home B a worktree of home A's clone
+ok - real treehouse: the acquisition fm-spawn types lands in this home's own clone
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=7129
+```
+
+`treehouse return <absolute-worktree-path>` resolves that worktree's pool from the path itself and ignores the configured root entirely, which is why moving a home to its own root strands no existing lease and needs no migration.
+Verified on 2026-09-22 with treehouse v2.2.0 on Darwin 27.0.0, by leasing under one root and returning with an unrelated `--root`:
+
+```sh
+W=$(cd <clone> && treehouse get --lease --lease-holder L1 --root <root1>)
+grep -c '"leased": true' <root1>/.treehouse/<pool>/treehouse-state.json
+(cd <clone> && treehouse return --force --root <root2> "$W")
+grep -c '"leased": true' <root1>/.treehouse/<pool>/treehouse-state.json
+test -e <root2> && echo created || echo absent
+```
+
+Observed output: `1` before the return, `0` after it, and `absent` for the unrelated root, which was never created.
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.
