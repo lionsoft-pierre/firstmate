@@ -246,6 +246,47 @@ land_on_origin_main() {
   rm -rf "$tmp"
 }
 
+# Answer Bitbucket's REST reads for pull request 7 with the supplied state and
+# head, the way bin/fm-pr-lib.sh asks for them: one configuration file on
+# stdin, a "fields" selector per request, and an abbreviated head on the pull
+# request resource that only the commit resource resolves in full.
+add_bitbucket_pr_for_head() {
+  local case_dir=$1 state=$2 head=$3 short
+  # These cases drive credentials through the config setting, so an ambient
+  # pair must not decide any of them.
+  unset BITBUCKET_EMAIL BITBUCKET_API_TOKEN
+  short=${head:0:12}
+  cat > "$case_dir/fakebin/curl" <<SH
+#!/usr/bin/env bash
+config=\$(cat)
+case "\$config" in
+  *"?fields=source.commit.hash"*)
+    printf '{"source": {"commit": {"hash": "%s"}}}\n' '$short'
+    exit 0
+    ;;
+  *"/commit/$short?fields=hash"*)
+    printf '{"hash": "%s"}\n' '$head'
+    exit 0
+    ;;
+esac
+printf '{"state": "%s"}\n' '$state'
+SH
+  chmod +x "$case_dir/fakebin/curl"
+  mkdir -p "$case_dir/config"
+  printf 'BITBUCKET_EMAIL=captain@example.test\nBITBUCKET_API_TOKEN=fixture-token-value\n' \
+    > "$case_dir/bitbucket.env"
+  chmod 0600 "$case_dir/bitbucket.env"
+  printf '%s\n' "$case_dir/bitbucket.env" > "$case_dir/config/bitbucket-credentials"
+}
+
+append_bitbucket_pr_meta_for_current_head() {
+  local case_dir=$1 head
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf '%s\n' \
+    'pr=https://bitbucket.org/ws/repo/pull-requests/7' \
+    "pr_head=$head" >> "$case_dir/state/task-x1.meta"
+}
+
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
 add_gh_pr_merged_for_head() {
   local case_dir=$1 head=$2
@@ -820,6 +861,67 @@ test_no_mistakes_truly_unpushed_refuses() {
   expect_code 1 "$rc" "nm-unpushed: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "nm-unpushed: no REFUSED line in stderr"
   pass "no-mistakes worktree with genuinely unlanded work is refused (safety preserved)"
+}
+
+# A merged Bitbucket pull request is landed-work evidence exactly as a merged
+# GitHub pull request is: the state and the head both come from Bitbucket's
+# REST API, and the local work has to be contained in that head.
+test_bitbucket_merged_pr_allows() {
+  local case_dir rc pr_head
+  case_dir=$(make_case bitbucket-merged)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_bitbucket_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_bitbucket_pr_for_head "$case_dir" MERGED "$pr_head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "bitbucket-merged: teardown should succeed when the Bitbucket PR is merged"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "bitbucket-merged: teardown printed a REFUSED line"
+  pass "worktree whose Bitbucket PR is merged is torn down"
+}
+
+# An open Bitbucket pull request is not landed work, and neither is one whose
+# state could not be read at all: both fall back to the content check, which
+# refuses this genuinely unlanded branch rather than treating a failed read as
+# a merge.
+test_bitbucket_unmerged_and_unreadable_refuse() {
+  local case_dir rc pr_head
+
+  case_dir=$(make_case bitbucket-open)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_bitbucket_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_bitbucket_pr_for_head "$case_dir" OPEN "$pr_head"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "bitbucket-open: teardown should refuse an open Bitbucket PR"
+  grep -q REFUSED "$case_dir/stderr" || fail "bitbucket-open: no REFUSED line in stderr"
+
+  # Same branch, same merged pull request, but no credentials to read it with.
+  case_dir=$(make_case bitbucket-nocreds)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_bitbucket_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_bitbucket_pr_for_head "$case_dir" MERGED "$pr_head"
+  rm -f "$case_dir/config/bitbucket-credentials" "$case_dir/bitbucket.env"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "bitbucket-nocreds: a credential-less read must not count as a merge"
+  grep -q REFUSED "$case_dir/stderr" || fail "bitbucket-nocreds: no REFUSED line in stderr"
+
+  pass "an unmerged or unreadable Bitbucket PR is never read as landed work"
 }
 
 test_squash_merged_branch_deleted_allows() {
@@ -3689,6 +3791,8 @@ test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 test_squash_merged_branch_deleted_allows
+test_bitbucket_merged_pr_allows
+test_bitbucket_unmerged_and_unreadable_refuse
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
 test_squash_merged_pr_allows_replayed_unpushed_patch

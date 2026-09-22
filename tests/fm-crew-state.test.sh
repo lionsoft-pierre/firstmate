@@ -162,6 +162,17 @@ case "${1:-} ${2:-}" in
 esac
 exit 1
 SH
+  cat > "$fb/curl" <<'SH'
+#!/usr/bin/env bash
+set -u
+# Bitbucket REST reads arrive as a configuration file on stdin, never as
+# arguments, so the request is read from there.
+config=$(cat)
+[ -z "${FM_FAKE_CURL_READ_LOG:-}" ] || \
+  printf '%s\n' "$config" | sed -n 's/^url = "\(.*\)"$/\1/p' >> "$FM_FAKE_CURL_READ_LOG"
+[ "${FM_FAKE_CURL_READ_FAIL:-0}" = 1 ] && exit 22
+printf '{"state": "%s"}\n' "${FM_FAKE_BB_STATE:-MERGED}"
+SH
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -242,7 +253,7 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/gh" "$fb/gh-axi" "$fb/glab" "$fb/tmux" "$fb/herdr"
+  chmod +x "$fb/no-mistakes" "$fb/gh" "$fb/gh-axi" "$fb/glab" "$fb/curl" "$fb/tmux" "$fb/herdr"
   printf '%s\n' "$fb"
 }
 
@@ -280,6 +291,7 @@ arm_idle_record() {  # <state-dir> <id>
 # assignments below stay exported into the fakes without an `export VAR=$(...)`
 # command-substitution assignment (SC2155).
 reset_fakes() {
+  unset BITBUCKET_EMAIL BITBUCKET_API_TOKEN
   NM_HOME="$TMP_ROOT/no-mistakes-unused"
   export NM_HOME
   FM_FAKE_AXI_STATUS=""
@@ -312,6 +324,9 @@ reset_fakes() {
   FM_FAKE_GLAB_STATE=merged
   FM_FAKE_GLAB_READ_FAIL=0
   FM_FAKE_GLAB_READ_LOG=
+  FM_FAKE_BB_STATE=MERGED
+  FM_FAKE_CURL_READ_FAIL=0
+  FM_FAKE_CURL_READ_LOG=
   unset FM_FAKE_PR_47_STATE FM_FAKE_PR_47_MERGED FM_FAKE_PR_48_STATE FM_FAKE_PR_48_MERGED
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING FM_FAKE_TMUX_UNREADABLE
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_READ_FAIL FM_FAKE_HERDR_HUSK FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_HERDR_PROCESS FM_FAKE_HERDR_SHELL_PID FM_FAKE_CI_LOGS
@@ -319,6 +334,7 @@ reset_fakes() {
   export FM_FAKE_AXI_HOME_ERROR FM_FAKE_AXI_STATUS_RUN_ERROR FM_FAKE_AXI_STATUS_ERROR
   export FM_FAKE_PR_STATE FM_FAKE_PR_MERGED FM_FAKE_PR_READ_FAIL FM_FAKE_PR_READ_LOG FM_FAKE_PR_STATE_AXI
   export FM_FAKE_GLAB_STATE FM_FAKE_GLAB_READ_FAIL FM_FAKE_GLAB_READ_LOG
+  export FM_FAKE_BB_STATE FM_FAKE_CURL_READ_FAIL FM_FAKE_CURL_READ_LOG
   export FM_FAKE_PR_47_STATE FM_FAKE_PR_47_MERGED FM_FAKE_PR_48_STATE FM_FAKE_PR_48_MERGED
 }
 
@@ -1410,6 +1426,58 @@ test_terminal_passed_without_readable_pr_identity_reports_unknown() {
   assert_not_contains "$out" "merged/closed" "unknown PR state must not get the old merged/closed label"
   assert_not_contains "$out" "PR merged" "unknown PR state must not be reported merged"
   pass "terminal passed run without readable PR identity reports unknown"
+}
+
+# Bitbucket pull request state is read over REST with the home's own
+# credentials, and only MERGED is a merge. A credential the bounded read cannot
+# resolve is an honest unknown, never a merge.
+test_terminal_passed_with_bitbucket_pr_states() {
+  reset_fakes
+  local d out read_log creds
+
+  d=$(new_case passed-bitbucket-pr)
+  make_repo_on_branch "$d/wt" fm/feat-dbbopen
+  make_fakebin "$d" >/dev/null
+  printf 'BITBUCKET_EMAIL=captain@example.test\nBITBUCKET_API_TOKEN=fixture-token-value\n' \
+    > "$d/bitbucket.env"
+  creds="$d/bitbucket.env"
+  read_log="$d/curl-read.log"
+  : > "$read_log"
+  FM_FAKE_CURL_READ_LOG=$read_log
+  fm_write_meta "$d/state/feat-dbbopen.meta" "window=fm:fm-feat-dbbopen" \
+    "worktree=$d/wt" "kind=ship" "pr=https://bitbucket.org/ws/repo/pull-requests/9"
+  FM_FAKE_AXI_STATUS="$(run_passed_with_pr fm/feat-dbbopen https://bitbucket.org/ws/repo/pull-requests/9)"
+
+  FM_FAKE_BB_STATE=OPEN
+  out=$(FM_BITBUCKET_CREDENTIALS="$creds" run_crew_state "$d" feat-dbbopen)
+  assert_contains "$out" "run passed: PR open" "open Bitbucket PR state is named"
+  assert_not_contains "$out" "PR merged" "open Bitbucket PR must not be reported merged"
+  assert_grep 'https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests/9?fields=state' \
+    "$read_log" "Bitbucket read addresses the REST resource by workspace and repository"
+
+  FM_FAKE_BB_STATE=DECLINED
+  out=$(FM_BITBUCKET_CREDENTIALS="$creds" run_crew_state "$d" feat-dbbopen)
+  assert_contains "$out" "run passed: PR declined" "declined Bitbucket PR state is named"
+  assert_not_contains "$out" "PR merged" "declined Bitbucket PR must not be reported merged"
+
+  FM_FAKE_BB_STATE=MERGED
+  out=$(FM_BITBUCKET_CREDENTIALS="$creds" run_crew_state "$d" feat-dbbopen)
+  assert_contains "$out" "run passed: PR merged" "merged Bitbucket PR is reported merged"
+
+  FM_FAKE_CURL_READ_FAIL=1
+  out=$(FM_BITBUCKET_CREDENTIALS="$creds" run_crew_state "$d" feat-dbbopen)
+  assert_contains "$out" "run passed: PR state unknown (unreadable)" \
+    "failed Bitbucket read is an honest unknown"
+  assert_not_contains "$out" "PR merged" "failed Bitbucket read must not be reported merged"
+
+  FM_FAKE_CURL_READ_FAIL=0
+  FM_FAKE_BB_STATE=MERGED
+  out=$(FM_BITBUCKET_CREDENTIALS="$d/absent.env" run_crew_state "$d" feat-dbbopen)
+  assert_contains "$out" "run passed: PR state unknown (unreadable)" \
+    "a credential-less Bitbucket read is an honest unknown"
+  assert_not_contains "$out" "PR merged" "a credential-less read must not be reported merged"
+
+  pass "terminal passed run reads Bitbucket PR state and never invents a merge"
 }
 
 test_terminal_passed_with_open_gitlab_mr_does_not_claim_merged() {
@@ -4857,6 +4925,7 @@ test_terminal_passed_without_readable_pr_identity_reports_unknown
 test_terminal_passed_with_open_gitlab_mr_does_not_claim_merged
 test_terminal_passed_with_merged_gitlab_mr_reports_merged
 test_terminal_passed_with_failed_gitlab_read_reports_unknown
+test_terminal_passed_with_bitbucket_pr_states
 test_terminal_failed
 test_terminal_failed_ci_orphan_after_green_reads_done
 test_terminal_failed_ci_orphan_status_only_reads_done

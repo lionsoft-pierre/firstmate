@@ -147,6 +147,17 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-push-transition-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+
+# A Bitbucket merge poll runs from this watcher's code root rather than from a
+# path under this home, so it cannot find the home's own setting on its own.
+# Exporting the resolved credentials file is the whole handoff, and
+# bin/fm-pr-lib.sh stays the one owner of how that path is resolved. The token
+# itself remains in that file and never reaches this process or any argument
+# list (docs/configuration.md "Bitbucket credentials").
+if [ -z "${FM_BITBUCKET_CREDENTIALS:-}" ]; then
+  FM_BITBUCKET_CREDENTIALS=$(FM_CONFIG_OVERRIDE="$CONFIG" fm_pr_bitbucket_credentials_file 2>/dev/null || true)
+fi
+[ -z "${FM_BITBUCKET_CREDENTIALS:-}" ] || export FM_BITBUCKET_CREDENTIALS
 # Only for the arm-time check on FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS below;
 # the per-cycle reconcile itself runs as a separate process.
 # shellcheck source=bin/fm-procevent-lib.sh
@@ -2239,15 +2250,15 @@ if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; the
   wake "$reason"
 fi
 
-# Shared by both the first-notification and already-notified paths below so
-# the retirement sequence (bin/fm-pr-lib.sh) is stated once.
-retire_merged_pr_poll() {  # <id>
-  local id=$1
-  if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" merged; then
+# Shared by the first-notification, already-notified, and terminal non-merge
+# paths below so the retirement sequence (bin/fm-pr-lib.sh) is stated once.
+retire_terminal_pr_poll() {  # <id> <result>
+  local id=$1 result=$2
+  if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$result"; then
     fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-      || triage_log "merged PR poll retirement remains recoverable for $id"
+      || triage_log "$result PR poll retirement remains recoverable for $id"
   else
-    triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
+    triage_log "$result PR poll retirement deferred because its canonical snapshot changed for $id"
   fi
 }
 
@@ -2455,7 +2466,7 @@ EOF
             triage_log "published merge outcome for $id but could not retire its authority record"
             exit 1
           fi
-          retire_merged_pr_poll "$id"
+          retire_terminal_pr_poll "$id" merged
           pr_poll_control_release || exit 1
           touch "$STATE/.last-check"
           if [ "$FM_MERGE_OUTCOME_ALREADY_RECORDED" = true ]; then
@@ -2463,6 +2474,12 @@ EOF
             continue
           fi
           wake "$reason"
+        elif [ "$is_pr_poll" -eq 1 ] \
+          && fm_pr_poll_terminal_result_valid "$out"; then
+          # A declined or superseded pull request will never merge, so the poll
+          # retires on that observation too. Only the wake below reports it:
+          # there is no merge outcome and no merge authority to settle.
+          retire_terminal_pr_poll "$id" "$out"
         fi
         pr_poll_control_release || exit 1
         fm_wake_append check "$c" "$reason" || exit 1

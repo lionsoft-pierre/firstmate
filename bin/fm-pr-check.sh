@@ -3,8 +3,9 @@
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
-# A GitHub pull request URL and a GitLab merge request URL are both accepted,
-# including a merge request on a self-hosted GitLab instance.
+# A GitHub pull request URL, a GitLab merge request URL, and a Bitbucket Cloud
+# pull request URL are all accepted, including a merge request on a self-hosted
+# GitLab instance.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -60,6 +61,21 @@ if [ "$PROVIDER" = gitlab ] && ! command -v glab >/dev/null 2>&1; then
   exit 1
 fi
 
+# The same argument for Bitbucket, which is read over REST rather than through
+# a CLI: curl and a usable credential pair are what make the watch possible at
+# all, so both are reported here rather than producing a permanently silent
+# poll. docs/configuration.md owns config/bitbucket-credentials.
+if [ "$PROVIDER" = bitbucket ]; then
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "error: watching a Bitbucket pull request requires curl on PATH" >&2
+    exit 1
+  fi
+  if ! fm_pr_bitbucket_load_credentials; then
+    echo "error: watching a Bitbucket pull request requires BITBUCKET_EMAIL and BITBUCKET_API_TOKEN, in the environment or in the credentials file named by config/bitbucket-credentials" >&2
+    exit 1
+  fi
+fi
+
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 # pr_head is recorded only when the forge's CLI can supply it. gh exposes the
@@ -71,6 +87,9 @@ fi
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 # bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
 # and treats a recorded value that disagrees as stale rather than authoritative.
+# Bitbucket's REST read exposes the head directly, so a Bitbucket task records
+# one; the pull request resource abbreviates it and bin/fm-pr-lib.sh resolves
+# that abbreviation before it is recorded.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
@@ -78,6 +97,11 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
   fi
+fi
+# A read that fails records nothing rather than stopping the watch, which is
+# what the optional field already means.
+if [ "$PROVIDER" = bitbucket ] && fm_pr_bitbucket_read_head "$PROJECT_PATH" "$NUMBER"; then
+  PR_HEAD=$FM_PR_RECORD_HEAD
 fi
 
 META_TMP=

@@ -11,9 +11,14 @@
 # instances, so the host is part of that identity rather than a constant. Every
 # consumer re-derives the identity from the stored URL and refuses any record
 # whose parts do not reconstruct that exact URL.
+# Bitbucket Cloud is workspace/repository under the single host bitbucket.org;
+# Bitbucket Server is not supported, so no other host parses as bitbucket.
 #
-# A validated exact merged result is retired through a private receipt only
+# A validated terminal result is retired through a private receipt only
 # after its durable wake is appended.
+# A terminal result is merged, declined, or superseded; only merged is landed
+# evidence, and every consumer that reads a receipt as a merge checks the
+# recorded result rather than the receipt's mere existence.
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
 
@@ -88,10 +93,14 @@ FM_PR_RETIRE_DATA_IDENTITY=
 FM_PR_RETIRE_CHECK_IDENTITY=
 FM_PR_RETIRE_REG_HASH=
 FM_PR_RETIRE_REG_IDENTITY=
+FM_PR_RETIRE_RESULT=
 FM_PR_RETIRE_RECEIPT_HASH=
 FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_RECORD_STATE=
 FM_PR_RECORD_MERGED=
+FM_PR_RECORD_HEAD=
+FM_PR_BITBUCKET_EMAIL=
+FM_PR_BITBUCKET_TOKEN=
 FM_PR_POLL_RETIREMENT_REJECTED=
 
 fm_task_id_path_safe() {
@@ -116,16 +125,17 @@ fm_task_id_creation_valid() {
 # GitLab serves self-hosted instances, so the host is part of the identity
 # rather than a constant. It is accepted only as a lowercase DNS name with no
 # userinfo, port, or trailing dot, which keeps one canonical spelling per MR.
-# github.com is refused here even though its shape is otherwise valid: it is
-# GitHub's own host and never a GitLab instance, so a URL like
-# https://github.com/o/r/-/merge_requests/1 (a typo'd or spoofed GitHub URL)
-# would otherwise be armed as a GitLab watch that can never succeed.
+# github.com and bitbucket.org are refused here even though their shape is
+# otherwise valid: each is another forge's own host and never a GitLab
+# instance, so a URL like https://github.com/o/r/-/merge_requests/1 (a typo'd
+# or spoofed foreign URL) would otherwise be armed as a GitLab watch that can
+# never succeed.
 fm_pr_gitlab_host_valid() {
   local host=${1-} label
   local LC_ALL=C
   local -a labels
   [ "${#host}" -ge 1 ] && [ "${#host}" -le 253 ] || return 1
-  [ "$host" != github.com ] || return 1
+  [ "$host" != github.com ] && [ "$host" != bitbucket.org ] || return 1
   case "$host" in
     .*|*.|*..*|*[!a-z0-9.-]*) return 1 ;;
   esac
@@ -160,15 +170,30 @@ fm_pr_gitlab_path_valid() {
   done
 }
 
+# A Bitbucket Cloud workspace or repository is addressed by its slug, which
+# Bitbucket restricts to letters, digits, hyphen, underscore, and dot. "." and
+# ".." are refused because neither can name a real workspace or repository and
+# either would let a stored path walk the REST resource it is pasted into.
+fm_pr_bitbucket_slug_valid() {
+  local slug=${1-}
+  local LC_ALL=C
+  [ "${#slug}" -ge 1 ] && [ "${#slug}" -le 100 ] || return 1
+  case "$slug" in
+    .|..|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+
 # Parse a canonical PR or MR URL into the provider-tagged identity. Validation
 # is strict and per provider: the GitHub username and repository rules are
-# unchanged, and GitLab gets its own host and namespace rules rather than a
-# loosened GitHub rule.
+# unchanged, GitLab gets its own host and namespace rules rather than a
+# loosened GitHub rule, and Bitbucket Cloud gets its own slug rule under its
+# one fixed host.
 #
 # FM_PR_OWNER and FM_PR_REPO are additionally set for github because
-# bin/fm-pr-merge.sh addresses GitHub by owner/repository. A gitlab URL leaves
-# them empty, and that path addresses the project by FM_PR_HOST and FM_PR_PATH
-# instead, so a merge request on any instance resolves without a hardcoded host.
+# bin/fm-pr-merge.sh addresses GitHub by owner/repository. A gitlab or
+# bitbucket URL leaves them empty, and those paths address the project by
+# FM_PR_HOST and FM_PR_PATH instead, so a merge request on any instance
+# resolves without a hardcoded host.
 fm_pr_url_parse() {
   local raw=${1-} pattern host path
   local LC_ALL=C
@@ -192,6 +217,17 @@ fm_pr_url_parse() {
     FM_PR_OWNER=${BASH_REMATCH[1]}
     # shellcheck disable=SC2034
     FM_PR_REPO=${BASH_REMATCH[2]}
+    FM_PR_NUMBER=${BASH_REMATCH[3]}
+    return 0
+  fi
+  pattern='^https://bitbucket\.org/([A-Za-z0-9._-]{1,100})/([A-Za-z0-9._-]{1,100})/pull-requests/([1-9][0-9]*)$'
+  if [[ "$raw" =~ $pattern ]]; then
+    fm_pr_bitbucket_slug_valid "${BASH_REMATCH[1]}" || return 1
+    fm_pr_bitbucket_slug_valid "${BASH_REMATCH[2]}" || return 1
+    FM_PR_PROVIDER=bitbucket
+    FM_PR_URL=$raw
+    FM_PR_HOST=bitbucket.org
+    FM_PR_PATH="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
     FM_PR_NUMBER=${BASH_REMATCH[3]}
     return 0
   fi
@@ -768,6 +804,16 @@ fm_pr_poll_snapshot_matches() {
   [ "$reg_identity" = "$FM_PR_POLL_SNAPSHOT_REG_IDENTITY" ]
 }
 
+# The terminal results a poll can retire on. Only merged is landed evidence;
+# declined and superseded are Bitbucket's terminal non-merge outcomes, which
+# retire the poll so it stops asking rather than being read as a merge.
+fm_pr_poll_terminal_result_valid() {
+  case "${1-}" in
+    merged|declined|superseded) return 0 ;;
+  esac
+  return 1
+}
+
 fm_pr_poll_retirement_parse() {
   local file=$1 version id provider url host path number data_hash template_hash
   local data_identity check_identity reg_hash reg_identity result _extra
@@ -783,6 +829,7 @@ fm_pr_poll_retirement_parse() {
   FM_PR_RETIRE_CHECK_IDENTITY=
   FM_PR_RETIRE_REG_HASH=
   FM_PR_RETIRE_REG_IDENTITY=
+  FM_PR_RETIRE_RESULT=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   exec 9< "$file" || return 1
   IFS= read -r version <&9 || { exec 9<&-; return 1; }
@@ -817,7 +864,7 @@ fm_pr_poll_retirement_parse() {
   [[ "$check_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
   [[ "$reg_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
   [[ "$reg_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
-  [ "$result" = merged ] || return 1
+  fm_pr_poll_terminal_result_valid "$result" || return 1
   FM_PR_RETIRE_ID=$id
   FM_PR_RETIRE_PROVIDER=$provider
   FM_PR_RETIRE_URL=$url
@@ -830,6 +877,7 @@ fm_pr_poll_retirement_parse() {
   FM_PR_RETIRE_CHECK_IDENTITY=$check_identity
   FM_PR_RETIRE_REG_HASH=$reg_hash
   FM_PR_RETIRE_REG_IDENTITY=$reg_identity
+  FM_PR_RETIRE_RESULT=$result
 }
 
 fm_pr_poll_retirement_receipt_valid() {
@@ -988,6 +1036,181 @@ FIELDS
   FM_PR_RECORD_MERGED=$merged
 }
 
+# --- Bitbucket Cloud credentials and REST reads -------------------------------
+# Bitbucket Cloud has no first-party CLI in firstmate's toolchain, so its
+# pull requests are read over REST 2.0 with curl. The API needs an Atlassian
+# account email and an API token as HTTP basic auth.
+#
+# The token never reaches a command line or a log: curl is handed a
+# configuration file on stdin, so no other process can read it out of argv.
+#
+# Resolution order for the pair: BITBUCKET_EMAIL and BITBUCKET_API_TOKEN in the
+# environment, then the credentials file named by FM_BITBUCKET_CREDENTIALS,
+# then the file whose path is the single line of config/bitbucket-credentials
+# in this home (docs/configuration.md owns the setting).
+
+# A credential value is pasted into a curl configuration file between double
+# quotes, so a quote, a backslash, or any control character in it is refused
+# rather than escaped: none can appear in a real email or API token, and
+# refusing keeps one unambiguous reading of the file curl receives.
+fm_pr_bitbucket_credential_value_valid() {
+  local value=${1-}
+  local LC_ALL=C
+  [ "${#value}" -ge 1 ] && [ "${#value}" -le 1024 ] || return 1
+  case "$value" in
+    *'"'*|*\\*|*[[:cntrl:]]*) return 1 ;;
+  esac
+}
+
+fm_pr_bitbucket_unquote() {
+  local value=${1-}
+  case "$value" in
+    '"'*'"') value=${value#\"}; value=${value%\"} ;;
+    "'"*"'") value=${value#\'}; value=${value%\'} ;;
+  esac
+  printf '%s' "$value"
+}
+
+fm_pr_bitbucket_credentials_file() {
+  local setting line
+  if [ -n "${FM_BITBUCKET_CREDENTIALS:-}" ]; then
+    printf '%s\n' "$FM_BITBUCKET_CREDENTIALS"
+    return 0
+  fi
+  if [ -n "${FM_CONFIG_OVERRIDE:-}" ]; then
+    setting="$FM_CONFIG_OVERRIDE/bitbucket-credentials"
+  elif [ -n "${FM_HOME:-}" ]; then
+    setting="$FM_HOME/config/bitbucket-credentials"
+  else
+    return 1
+  fi
+  [ -f "$setting" ] && [ ! -L "$setting" ] || return 1
+  IFS= read -r line < "$setting" || return 1
+  line=${line%$'\r'}
+  line=${line#"${line%%[![:space:]]*}"}
+  line=${line%"${line##*[![:space:]]}"}
+  [ -n "$line" ] || return 1
+  # A leading "~/" in the setting is the literal path prefix a captain writes,
+  # expanded here because no shell expanded it on the way in.
+  # shellcheck disable=SC2088
+  if [ "${line:0:2}" = "~/" ]; then
+    line="$HOME/${line:2}"
+  fi
+  printf '%s\n' "$line"
+}
+
+# Populates FM_PR_BITBUCKET_EMAIL and FM_PR_BITBUCKET_TOKEN, or fails without
+# setting either. A failure here is never a merge: every caller reports the
+# missing credential or stays silent rather than treating it as a state.
+fm_pr_bitbucket_load_credentials() {
+  local file line email='' token=''
+  FM_PR_BITBUCKET_EMAIL=
+  FM_PR_BITBUCKET_TOKEN=
+  if [ -n "${BITBUCKET_EMAIL:-}" ] && [ -n "${BITBUCKET_API_TOKEN:-}" ]; then
+    email=$BITBUCKET_EMAIL
+    token=$BITBUCKET_API_TOKEN
+  else
+    file=$(fm_pr_bitbucket_credentials_file) || return 1
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        BITBUCKET_EMAIL=*) email=${line#BITBUCKET_EMAIL=} ;;
+        BITBUCKET_API_TOKEN=*) token=${line#BITBUCKET_API_TOKEN=} ;;
+      esac
+    done < "$file"
+    email=$(fm_pr_bitbucket_unquote "$email")
+    token=$(fm_pr_bitbucket_unquote "$token")
+  fi
+  fm_pr_bitbucket_credential_value_valid "$email" || return 1
+  fm_pr_bitbucket_credential_value_valid "$token" || return 1
+  FM_PR_BITBUCKET_EMAIL=$email
+  FM_PR_BITBUCKET_TOKEN=$token
+}
+
+# Read one Bitbucket REST resource and echo its body. "resource" is the path
+# below the API base and is composed only from already validated parts. Every
+# read asks for a partial response through the API's own "fields" selector, so
+# the body carries one named value and no nested object can supply a second
+# reading of the same key.
+fm_pr_bitbucket_api_get() {  # <resource>
+  local resource=$1 body
+  command -v curl >/dev/null 2>&1 || return 1
+  fm_pr_bitbucket_load_credentials || return 1
+  # The API host is a constant rather than a setting: this request carries the
+  # credential, so nothing in the environment may redirect it.
+  body=$(printf 'url = "https://api.bitbucket.org/2.0/%s"\nuser = "%s:%s"\nsilent\nshow-error\nfail\nmax-time = 20\n' \
+    "$resource" "$FM_PR_BITBUCKET_EMAIL" "$FM_PR_BITBUCKET_TOKEN" \
+    | curl --config - 2>/dev/null) || return 1
+  [ -n "$body" ] || return 1
+  printf '%s' "$body"
+}
+
+# Exactly one "<key>": "<value>" pair, or nothing. More than one occurrence of
+# the key is refused rather than resolved by position, so an unexpectedly
+# larger body can never be read as the field that was asked for.
+fm_pr_bitbucket_json_one_string() {  # <body> <key>
+  local body=$1 key=$2 count value
+  local LC_ALL=C
+  count=$(printf '%s' "$body" | grep -o "\"$key\"[[:space:]]*:" | wc -l | tr -d '[:space:]')
+  [ "$count" = 1 ] || return 1
+  value=$(printf '%s' "$body" \
+    | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -1)
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
+}
+
+# Bitbucket pull request states are OPEN, MERGED, DECLINED, and SUPERSEDED.
+fm_pr_bitbucket_state_valid() {
+  case "${1-}" in
+    OPEN|MERGED|DECLINED|SUPERSEDED) return 0 ;;
+  esac
+  return 1
+}
+
+fm_pr_bitbucket_read_record() {  # <path> <number>
+  local path=$1 number=$2 body state
+  FM_PR_RECORD_STATE=
+  FM_PR_RECORD_MERGED=
+  body=$(fm_pr_bitbucket_api_get "repositories/$path/pullrequests/$number?fields=state") || return 1
+  state=$(fm_pr_bitbucket_json_one_string "$body" state) || return 1
+  fm_pr_bitbucket_state_valid "$state" || return 1
+  # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+  # shellcheck disable=SC2034
+  FM_PR_RECORD_STATE=$state
+  if [ "$state" = MERGED ]; then
+    # shellcheck disable=SC2034
+    FM_PR_RECORD_MERGED=true
+  else
+    # shellcheck disable=SC2034
+    FM_PR_RECORD_MERGED=false
+  fi
+}
+
+# The source branch head of a Bitbucket pull request, as a full commit hash.
+# Bitbucket abbreviates source.commit.hash on the pull request resource, so the
+# abbreviation is resolved through that repository's own commit resource rather
+# than recorded or compared as-is: every consumer treats a head as an exact
+# commit object, and an abbreviation is ambiguous by construction.
+fm_pr_bitbucket_read_head() {  # <path> <number>
+  local path=$1 number=$2 body short head
+  local LC_ALL=C
+  FM_PR_RECORD_HEAD=
+  body=$(fm_pr_bitbucket_api_get "repositories/$path/pullrequests/$number?fields=source.commit.hash") || return 1
+  short=$(fm_pr_bitbucket_json_one_string "$body" hash) || return 1
+  [[ "$short" =~ ^[0-9a-f]{7,64}$ ]] || return 1
+  if fm_pr_head_valid "$short"; then
+    FM_PR_RECORD_HEAD=$short
+    return 0
+  fi
+  body=$(fm_pr_bitbucket_api_get "repositories/$path/commit/$short?fields=hash") || return 1
+  head=$(fm_pr_bitbucket_json_one_string "$body" hash) || return 1
+  fm_pr_head_valid "$head" || return 1
+  # The resolved hash must be the one that was asked for, so a redirected or
+  # unexpected resource cannot substitute another commit.
+  [ "${head#"$short"}" != "$head" ] || return 1
+  FM_PR_RECORD_HEAD=$head
+}
+
 fm_pr_poll_retirement_data_valid() {
   local state=$1 id=$2 state_device data data_hash data_identity
   state_device=$(fm_pr_file_device "$state") || return 1
@@ -1100,7 +1323,7 @@ fm_pr_poll_retirement_discard_obsolete() {
 
 fm_pr_poll_retirement_publish() {
   local state=$1 id=$2 template=$3 result=$4 receipt state_device tmp
-  [ "$result" = merged ] || return 1
+  fm_pr_poll_terminal_result_valid "$result" || return 1
   fm_pr_poll_snapshot_matches "$state" "$id" "$template" || return 1
   state_device=$(fm_pr_file_device "$state") || return 1
   receipt="$state/$id.pr-poll-retirement"
@@ -1122,7 +1345,7 @@ fm_pr_poll_retirement_publish() {
       "$FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY" \
       "$FM_PR_POLL_SNAPSHOT_REG_HASH" \
       "$FM_PR_POLL_SNAPSHOT_REG_IDENTITY" \
-      merged > "$tmp" \
+      "$result" > "$tmp" \
     || ! chmod 0600 "$tmp" \
     || ! fm_pr_private_file_valid "$tmp" 600 "$state_device" \
     || ! fm_pr_poll_retirement_parse "$tmp" \

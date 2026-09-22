@@ -313,6 +313,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/bitbucket-merge-watch.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/configuration.md",
       "audience": "operator-current"
     },

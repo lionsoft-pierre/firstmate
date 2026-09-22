@@ -26,6 +26,9 @@ REAL_CHMOD=$(command -v chmod)
 # deliberately restricted, so a case that needs jq exposes this one rather than
 # depending on the host keeping jq in one of those four directories.
 REAL_JQ=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
+# The Bitbucket cases drive credentials deliberately, so an ambient pair on the
+# developer's or runner's environment must not decide any of them.
+unset BITBUCKET_EMAIL BITBUCKET_API_TOKEN
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -206,11 +209,40 @@ printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
-  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
+  # curl as the Bitbucket REST path invokes it: the request is a configuration
+  # file on stdin, never arguments. The whole argument list and the resolved
+  # URL are logged separately so a test can assert the token reached neither.
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_CURL_ARGV_LOG"
+config=$(cat)
+printf '%s\n' "$config" | sed -n 's/^url = "\(.*\)"$/\1/p' >> "$FM_TEST_CURL_LOG"
+printf '%s\n' "$config" | sed -n 's/^user = "\(.*\)"$/\1/p' >> "$FM_TEST_CURL_USER_LOG"
+[ "${FM_TEST_CURL_FAIL:-0}" = 0 ] || exit 22
+case "$config" in
+  *"?fields=source.commit.hash"*)
+    printf '{"source": {"commit": {"hash": "%s"}}}\n' "${FM_TEST_BB_SHORT_HEAD:-0123456789ab}"
+    exit 0
+    ;;
+  *"/commit/"*)
+    printf '{"hash": "%s"}\n' "${FM_TEST_BB_HEAD:-0123456789ab3456789abcdef0123456789abcde}"
+    exit 0
+    ;;
+esac
+[ -z "${FM_TEST_BB_BODY:-}" ] || { printf '%s\n' "$FM_TEST_BB_BODY"; exit 0; }
+printf '{"state": "%s"}\n' "${FM_TEST_BB_STATE:-OPEN}"
+SH
+  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab" "$fakebin/curl"
   : > "$dir/gh.log"
   : > "$dir/gh-axi.log"
   : > "$dir/glab.log"
+  : > "$dir/curl.log"
+  : > "$dir/curl-argv.log"
+  : > "$dir/curl-user.log"
   : > "$dir/guard.log"
+  printf 'BITBUCKET_EMAIL=captain@example.test\nBITBUCKET_API_TOKEN=fixture-token-value\n' \
+    > "$dir/bitbucket.env"
+  chmod 0600 "$dir/bitbucket.env"
   printf '%s\n' "$dir"
 }
 
@@ -243,6 +275,8 @@ run_check_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_CURL_LOG="$dir/curl.log" FM_TEST_CURL_ARGV_LOG="$dir/curl-argv.log" \
+    FM_TEST_CURL_USER_LOG="$dir/curl-user.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
@@ -253,12 +287,31 @@ run_merge_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_CURL_LOG="$dir/curl.log" FM_TEST_CURL_ARGV_LOG="$dir/curl-argv.log" \
+    FM_TEST_CURL_USER_LOG="$dir/curl-user.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
 }
 
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
 INVALID_URLS=(
+  'https://bitbucket.org/ws/repo/pull-requests/0'
+  'https://bitbucket.org/ws/repo/pull-requests/01'
+  'https://bitbucket.org/ws/repo/pull-requests/1/'
+  'https://bitbucket.org/ws/repo/pull-requests/1?x=1'
+  'https://bitbucket.org/ws/repo/pull-requests/1#c'
+  'https://bitbucket.org/ws/pull-requests/1'
+  'https://bitbucket.org/ws/group/repo/pull-requests/1'
+  'https://bitbucket.org/ws/repo/pull/1'
+  'https://bitbucket.org/./repo/pull-requests/1'
+  'https://bitbucket.org/ws/../pull-requests/1'
+  'https://bitbucket.org/ws/re po/pull-requests/1'
+  'https://Bitbucket.org/ws/repo/pull-requests/1'
+  'https://bitbucket.org:443/ws/repo/pull-requests/1'
+  'https://user@bitbucket.org/ws/repo/pull-requests/1'
+  'http://bitbucket.org/ws/repo/pull-requests/1'
+  'https://bitbucket.example/ws/repo/pull-requests/1'
+  'https://bitbucket.org/ws/repo/-/merge_requests/1'
   'https://gitlab.com/single/-/merge_requests/1'
   'https://gitlab.com/g/p/-/merge_requests/0'
   'https://gitlab.com/g/p/-/merge_requests/01'
@@ -412,6 +465,24 @@ https://gitlab.com/group/sub/deep/project/-/merge_requests/42|gitlab.com|group/s
 https://gitlab.example.co.uk/g/p/-/merge_requests/7|gitlab.example.co.uk|g/p|7
 https://code.internal/team/tools/ci-runner/-/merge_requests/123456|code.internal|team/tools/ci-runner|123456
 EOF
+  while IFS='|' read -r url path number; do
+    [ -n "$url" ] || continue
+    fm_pr_url_parse "$url" || fail "parser rejected a canonical Bitbucket pull request URL"
+    [ "$FM_PR_PROVIDER" = bitbucket ] || fail "parser did not tag a Bitbucket URL as bitbucket"
+    [ "$FM_PR_URL" = "$url" ] || fail "parser changed a canonical Bitbucket URL"
+    [ "$FM_PR_HOST" = bitbucket.org ] || fail "parser returned wrong Bitbucket host"
+    [ "$FM_PR_PATH" = "$path" ] || fail "parser returned wrong Bitbucket repository path"
+    [ "$FM_PR_NUMBER" = "$number" ] || fail "parser returned wrong Bitbucket pull request number"
+    [ -z "$FM_PR_OWNER" ] && [ -z "$FM_PR_REPO" ] \
+      || fail "parser set GitHub owner/repository for a Bitbucket URL"
+  done <<'EOF'
+https://bitbucket.org/acme-workspace/service-repo/pull-requests/108|acme-workspace/service-repo|108
+https://bitbucket.org/ws/repo-name_with.parts/pull-requests/1|ws/repo-name_with.parts|1
+EOF
+  # bitbucket.org is another forge's own host, so it never parses as a GitLab
+  # instance even in an otherwise valid merge request shape.
+  ! fm_pr_gitlab_host_valid bitbucket.org \
+    || fail "the GitLab host rule accepted Bitbucket's own host"
   fm_pr_url_parse https://github.com/a/b/pull/1 || fail "parser rejected canonical URL"
   [ "$FM_PR_PROVIDER" = github ] || fail "parser did not tag a pull request URL as github"
   [ "$FM_PR_HOST" = github.com ] || fail "parser returned wrong GitHub host"
@@ -650,11 +721,19 @@ SH
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
 }
 
+# The bound exists to turn a wedged watcher into a failure, not to assert how
+# fast one cycle is: no caller expects the timeout exit, and this family is
+# proven concurrent at four jobs, so the bound has to clear a cycle that is
+# competing with three other suites. The slowest case here also injects a
+# per-copy delay, which is why a tight bound failed there first.
+FM_TEST_WATCH_BOUND_SECS=${FM_TEST_WATCH_BOUND_SECS:-30}
+
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
   local check_timeout=${FM_TEST_CHECK_TIMEOUT:-1}
   shift 2
-  perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 10; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
+  perl -e 'my $bound=shift; my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm $bound; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
+    "$FM_TEST_WATCH_BOUND_SECS" \
     env FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT="$check_timeout" \
       FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
 }
@@ -715,6 +794,8 @@ make_poll_fixture() {
 run_poll() {
   local dir=$1
   FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_CURL_LOG="$dir/curl.log" FM_TEST_CURL_ARGV_LOG="$dir/curl-argv.log" \
+    FM_TEST_CURL_USER_LOG="$dir/curl-user.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
     bash "$dir/home/state/task-a.check.sh"
 }
@@ -1431,6 +1512,242 @@ EOF
     || fail "merge wrapper merged despite an unreadable merge request state"
 
   pass "GitLab merge requests are followed on any instance and never wake falsely"
+}
+
+# Bitbucket Cloud pull requests are watched over REST rather than through a
+# CLI, so this covers what the other forges get from theirs: only a terminal
+# state produces a line, a missing credential or tool is silence rather than a
+# merge, the token never reaches an argument list, and firstmate refuses to
+# merge a Bitbucket pull request at all. docs/bitbucket-merge-watch.md records
+# the read-only live check that confirmed the API shapes this fixture
+# reproduces.
+test_bitbucket_merge_watch() {
+  local dir state out rc url value nocurl entry bindir name
+  dir=$(make_case bitbucket-merge-watch)
+  state="$dir/home/state"
+  url=https://bitbucket.org/acme-workspace/service-repo/pull-requests/108
+
+  write_poll_meta "$state" task-a "$url"
+  fm_pr_poll_prepare "$state" task-a bitbucket "$url" bitbucket.org acme-workspace/service-repo 108 "$POLL" \
+    || fail "could not prepare a Bitbucket poll"
+  fm_pr_poll_publish_prepared || fail "could not publish a Bitbucket poll"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "published Bitbucket poll provenance or metadata binding was invalid"
+  [ "$(cat "$state/task-a.pr-poll")" = "bitbucket
+$url
+bitbucket.org
+acme-workspace/service-repo
+108" ] || fail "published Bitbucket sidecar bytes were not exact"
+
+  # Only Bitbucket's own terminal states produce a line, and each produces its
+  # own. Everything else, including an unreadable or unexpected body, is
+  # silence rather than an outcome.
+  for value in OPEN open Merged '' not-a-state MERGED-but-not; do
+    out=$(FM_TEST_BB_STATE="$value" FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" run_poll "$dir")
+    [ -z "$out" ] || fail "Bitbucket poll emitted for a non-terminal state"
+  done
+  for value in MERGED:merged DECLINED:declined SUPERSEDED:superseded; do
+    out=$(FM_TEST_BB_STATE="${value%%:*}" FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" run_poll "$dir")
+    [ "$out" = "${value#*:}" ] \
+      || fail "Bitbucket poll did not emit exactly one ${value#*:} line for ${value%%:*}"
+  done
+  out=$(FM_TEST_CURL_FAIL=1 FM_TEST_BB_STATE=MERGED \
+    FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted after a failed request"
+  # A body carrying a second "state" is refused rather than resolved by
+  # position, so a larger-than-expected resource cannot be read as the field
+  # that was asked for.
+  out=$(FM_TEST_BB_BODY='{"state": "MERGED", "participants": [{"state": "approved"}]}' \
+    FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll read a state out of an ambiguous body"
+
+  # The request is addressed at the API host by workspace and repository, and
+  # the token reaches neither the argument list nor the resolved URL.
+  grep -qF 'https://api.bitbucket.org/2.0/repositories/acme-workspace/service-repo/pullrequests/108?fields=state' \
+    "$dir/curl.log" || fail "Bitbucket poll did not address the REST resource by workspace and repository"
+  grep -qF -- --config "$dir/curl-argv.log" \
+    || fail "Bitbucket poll did not hand curl its request on stdin"
+  ! grep -qF 'fixture-token-value' "$dir/curl-argv.log" \
+    || fail "Bitbucket poll put the API token on curl's command line"
+  ! grep -qF 'fixture-token-value' "$dir/curl.log" \
+    || fail "Bitbucket poll put the API token in the request URL"
+  grep -qF 'captain@example.test:fixture-token-value' "$dir/curl-user.log" \
+    || fail "Bitbucket poll did not authenticate with the credentials file pair"
+
+  # The environment pair is the first source and needs no file at all.
+  out=$(FM_TEST_BB_STATE=MERGED BITBUCKET_EMAIL=env@example.test \
+    BITBUCKET_API_TOKEN=env-token-value FM_BITBUCKET_CREDENTIALS="$dir/absent.env" \
+    run_poll "$dir")
+  [ "$out" = merged ] || fail "Bitbucket poll did not use the credential pair from the environment"
+  grep -qF 'env@example.test:env-token-value' "$dir/curl-user.log" \
+    || fail "Bitbucket poll did not authenticate with the environment pair"
+
+  # A missing credential is never a merge: the poll stays silent even for the
+  # pull request that is genuinely merged.
+  out=$(FM_TEST_BB_STATE=MERGED FM_BITBUCKET_CREDENTIALS="$dir/absent.env" run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted with no credentials file"
+  printf 'BITBUCKET_EMAIL=captain@example.test\n' > "$dir/half.env"
+  out=$(FM_TEST_BB_STATE=MERGED FM_BITBUCKET_CREDENTIALS="$dir/half.env" run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted with only half a credential pair"
+  printf 'BITBUCKET_EMAIL=captain@example.test\nBITBUCKET_API_TOKEN=bad"value\n' > "$dir/quoted.env"
+  out=$(FM_TEST_BB_STATE=MERGED FM_BITBUCKET_CREDENTIALS="$dir/quoted.env" run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll accepted a token that would change how curl reads its configuration"
+
+  # An absent curl produces no wake rather than a false merge. The whole search
+  # path is mirrored without it, because a real curl anywhere on PATH would
+  # make this prove nothing.
+  nocurl="$dir/nocurl"
+  mkdir -p "$nocurl"
+  while IFS= read -r bindir; do
+    [ -d "$bindir" ] || continue
+    for entry in "$bindir"/*; do
+      [ -e "$entry" ] || continue
+      name=$(basename "$entry")
+      [ "$name" = curl ] && continue
+      [ -e "$nocurl/$name" ] || ln -s "$entry" "$nocurl/$name" 2>/dev/null
+    done
+  done <<EOF
+$dir/fakebin
+$(printf '%s\n' "$BASE_PATH" | tr ':' '\n')
+EOF
+  ! PATH="$nocurl" command -v curl >/dev/null 2>&1 \
+    || fail "the curl-free search path still resolved curl"
+  out=$(FM_TEST_BB_STATE=MERGED FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" \
+    PATH="$nocurl" bash "$state/task-a.check.sh")
+  [ -z "$out" ] || fail "Bitbucket poll emitted with curl absent from PATH"
+
+  # A doctored sidecar cannot redirect the poll: the stored parts must rebuild
+  # the stored URL exactly.
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.example acme-workspace/service-repo 108 \
+    > "$state/task-a.pr-poll"
+  out=$(FM_TEST_BB_STATE=MERGED FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted for a sidecar whose host was swapped"
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.org acme-workspace/other-repo 108 \
+    > "$state/task-a.pr-poll"
+  out=$(FM_TEST_BB_STATE=MERGED FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted for a sidecar whose repository was swapped"
+
+  # Arming is where a missing credential can still be reported, so it refuses
+  # there rather than arming a watch that can never fire, and it records the
+  # head Bitbucket's resource abbreviates.
+  write_task_meta "$dir" task-b
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_BITBUCKET_CREDENTIALS="$dir/absent.env" \
+    PATH="$dir/fakebin:$BASE_PATH" \
+    "$PR_CHECK" task-b "$url" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "arming a Bitbucket watch succeeded with no credentials"
+  case "$out" in
+    *"BITBUCKET_EMAIL and BITBUCKET_API_TOKEN"*) ;;
+    *) fail "arming a Bitbucket watch with no credentials did not report the missing pair" ;;
+  esac
+  [ ! -e "$state/task-b.check.sh" ] || fail "refused Bitbucket arming left a poll armed"
+
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" \
+    PATH="$nocurl" "$PR_CHECK" task-b "$url" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "arming a Bitbucket watch succeeded with curl absent"
+  case "$out" in
+    *"requires curl on PATH"*) ;;
+    *) fail "arming a Bitbucket watch with curl absent did not report the missing tool" ;;
+  esac
+
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_CURL_LOG="$dir/curl.log" \
+    FM_TEST_CURL_ARGV_LOG="$dir/curl-argv.log" FM_TEST_CURL_USER_LOG="$dir/curl-user.log" \
+    FM_BITBUCKET_CREDENTIALS="$dir/bitbucket.env" \
+    FM_TEST_BB_SHORT_HEAD=0123456789ab \
+    FM_TEST_BB_HEAD=0123456789ab3456789abcdef0123456789abcde \
+    PATH="$dir/fakebin:$BASE_PATH" \
+    "$PR_CHECK" task-b "$url")
+  [ "$out" = "armed: state/task-b.check.sh" ] || fail "arming a Bitbucket watch did not report the armed poll"
+  grep -qxF "pr=$url" "$state/task-b.meta" || fail "arming a Bitbucket watch recorded no canonical pr="
+  # Bitbucket abbreviates the head on the pull request resource, so the
+  # recorded value must be the resolved full commit rather than what that
+  # resource returned.
+  grep -qxF 'pr_head=0123456789ab3456789abcdef0123456789abcde' "$state/task-b.meta" \
+    || fail "arming a Bitbucket watch did not record the resolved full head"
+  grep -qF '/commit/0123456789ab?fields=hash' "$dir/curl.log" \
+    || fail "arming a Bitbucket watch did not resolve the abbreviated head through the commit resource"
+
+  # The config setting names the credentials file when nothing else does.
+  mkdir -p "$dir/home/config"
+  printf '%s\n' "$dir/bitbucket.env" > "$dir/home/config/bitbucket-credentials"
+  write_task_meta "$dir" task-d
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_CURL_LOG="$dir/curl.log" \
+    FM_TEST_CURL_ARGV_LOG="$dir/curl-argv.log" FM_TEST_CURL_USER_LOG="$dir/curl-user.log" \
+    PATH="$dir/fakebin:$BASE_PATH" \
+    "$PR_CHECK" task-d "$url")
+  [ "$out" = "armed: state/task-d.check.sh" ] \
+    || fail "config/bitbucket-credentials did not supply the credentials at arming"
+
+  # Merging is not firstmate's to do on Bitbucket, and the refusal comes before
+  # anything is recorded or armed.
+  write_task_meta "$dir" task-c
+  set +e
+  run_merge_entry "$dir" task-c "$url" >/dev/null 2> "$dir/merge-c.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "merge wrapper merged a Bitbucket pull request"
+  grep -qF 'does not merge Bitbucket pull requests' "$dir/merge-c.err" \
+    || fail "merge wrapper refused a Bitbucket pull request for some other reason"
+  [ ! -e "$state/task-c.check.sh" ] || fail "refused Bitbucket merge armed a poll anyway"
+  grep -qxF 'pr=' "$state/task-c.meta" 2>/dev/null \
+    && fail "refused Bitbucket merge recorded a pr= anyway"
+  [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a Bitbucket URL"
+  [ ! -s "$dir/glab.log" ] || fail "merge wrapper reached the GitLab CLI for a Bitbucket URL"
+
+  pass "Bitbucket pull requests are watched over REST, never merged, and never wake falsely"
+}
+
+# A declined or superseded pull request is terminal, so its poll retires on
+# that observation instead of asking forever, and the receipt records which
+# terminal outcome it was rather than implying a merge.
+test_bitbucket_terminal_non_merge_retires() {
+  local dir state url result
+
+  for result in declined superseded; do
+    dir=$(make_case "bitbucket-terminal-$result")
+    state="$dir/home/state"
+    url=https://bitbucket.org/ws/repo/pull-requests/9
+    write_poll_meta "$state" task-a "$url"
+    fm_pr_poll_prepare "$state" task-a bitbucket "$url" bitbucket.org ws/repo 9 "$POLL" \
+      || fail "could not prepare a Bitbucket poll"
+    fm_pr_poll_publish_prepared || fail "could not publish a Bitbucket poll"
+    fm_pr_poll_snapshot_capture "$state" task-a "$POLL" \
+      || fail "could not capture the published Bitbucket poll"
+
+    fm_pr_poll_retirement_publish "$state" task-a "$POLL" "$result" \
+      || fail "a $result outcome could not publish its retirement receipt"
+    fm_pr_poll_retirement_parse "$state/task-a.pr-poll-retirement" \
+      || fail "the $result retirement receipt did not parse"
+    [ "$FM_PR_RETIRE_RESULT" = "$result" ] \
+      || fail "the retirement receipt did not record the $result outcome"
+    fm_pr_poll_retirement_recover_one "$state" task-a "$POLL" \
+      || fail "the $result retirement did not complete"
+    [ ! -e "$state/task-a.check.sh" ] || fail "a $result outcome left the poll armed"
+    [ ! -e "$state/task-a.pr-poll" ] || fail "a $result outcome left the poll sidecar behind"
+    [ ! -e "$state/task-a.pr-poll-retirement" ] \
+      || fail "a $result outcome left its retirement receipt behind"
+  done
+
+  # Only these three results are terminal; nothing else can retire a poll.
+  for result in '' open OPEN closed merged-ish; do
+    ! fm_pr_poll_terminal_result_valid "$result" \
+      || fail "a non-terminal result was accepted as a retirement outcome"
+  done
+  for result in merged declined superseded; do
+    fm_pr_poll_terminal_result_valid "$result" \
+      || fail "a terminal result was refused as a retirement outcome"
+  done
+
+  pass "a declined or superseded pull request retires its poll and records that outcome"
 }
 
 seed_canonical_poll() {
@@ -2755,6 +3072,8 @@ SH
 
 test_parser_matrix
 test_gitlab_merge_watch
+test_bitbucket_merge_watch
+test_bitbucket_terminal_non_merge_retires
 test_merged_poll_retires_once
 test_merged_poll_reregistration_after_notification_is_absorbed
 test_merged_poll_retries_a_failed_upward_report

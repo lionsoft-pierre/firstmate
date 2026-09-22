@@ -695,6 +695,22 @@ The locked bootstrap inheritance pass uses the same placement-specific behavior;
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
 
+## Bitbucket credentials (config/bitbucket-credentials)
+
+Firstmate watches a Bitbucket Cloud pull request until the Bitbucket side's own process merges it; it never merges one itself, and `bin/fm-pr-merge.sh` refuses a Bitbucket URL with that reason.
+Bitbucket has no CLI in the toolchain above, so the watch reads REST 2.0 with `curl`, authenticated as an Atlassian account email and an API token over HTTP basic auth.
+The pair is `BITBUCKET_EMAIL` and `BITBUCKET_API_TOKEN`, resolved from the environment first, then from the credentials file named by `FM_BITBUCKET_CREDENTIALS`, then from the file whose path is the single line of the optional local, gitignored `config/bitbucket-credentials`.
+A leading `~/` in that line expands to the home directory.
+The watcher resolves the setting once and hands the resulting path to each poll, and a published check run on its own resolves the setting from the home it was published into, so the same file is found either way.
+The credentials file itself holds `KEY=VALUE` lines and should be readable only by its owner; keep it outside this repository, as `~/.config/<client>/bitbucket.env` does.
+The token is never printed, logged, recorded in any durable record, or placed on a command line: `curl` receives it in a configuration file on stdin, so no other process can read it out of an argument list.
+
+`bin/fm-pr-check.sh` refuses to arm a Bitbucket watch when `curl` or the credential pair is missing, because the poll is silent on every error and an unusable credential would otherwise be indistinguishable from a pull request that is never merged.
+Once armed, a failing or absent credential keeps the poll silent rather than reporting a merge, and `bin/fm-teardown.sh` falls back to its content and remote-reachability checks and refuses when those are inconclusive.
+The poll wakes firstmate once on `MERGED`, and once on `DECLINED` or `SUPERSEDED`, which are terminal too: it retires on any of the three instead of asking forever.
+Only Bitbucket Cloud (`https://bitbucket.org/<workspace>/<repository>/pull-requests/<number>`) is supported; Bitbucket Server and Data Center are not.
+[`bitbucket-merge-watch.md`](bitbucket-merge-watch.md) is the empirical record for the API shapes this path depends on, including the abbreviated head the pull request resource returns.
+
 ## Watched tool updates (config/watched-tools.json)
 
 `config/watched-tools.json` is an optional local, gitignored list of the tools this home depends on.
@@ -1190,6 +1206,9 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
+FM_BITBUCKET_CREDENTIALS=  # path to the Bitbucket credentials file, overriding config/bitbucket-credentials; see "Bitbucket credentials"
+BITBUCKET_EMAIL=         # Atlassian account email for Bitbucket Cloud REST reads; takes precedence over any credentials file
+BITBUCKET_API_TOKEN=     # Bitbucket Cloud API token paired with BITBUCKET_EMAIL; never recorded, logged, or passed on a command line
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"

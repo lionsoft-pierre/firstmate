@@ -46,8 +46,8 @@
 # reachable from any remote-tracking branch (a fork counts as a remote, so
 # upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
 # normal ship task whose commits are not so reachable - when its PR is merged and
-# GitHub reports a PR head that contains the current local work, or its content is
-# already present in the up-to-date default branch. This recognizes the common
+# the forge reports a PR head that contains the current local work, or its content
+# is already present in the up-to-date default branch. This recognizes the common
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
 # on a remote yet the change is fully in main.
 # Squash merges collapse the branch's commits, so per-commit patch ids against main
@@ -61,10 +61,13 @@
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
 # up a merged PR whose head branch matches the worktree's branch, fetching its head
-# via refs/pull/<n>/head when the branch itself was deleted. So a missing pr= never
+# from the forge's own pull request ref namespace when the branch itself was
+# deleted (ensure_commit_object owns which ref that is). So a missing pr= never
 # by itself causes a false refusal of landed work.
-# A gh lookup error falls back to the content check; if that is also inconclusive,
-# teardown refuses rather than risk discarding unlanded work.
+# A failed forge read falls back to the content check; if that is also
+# inconclusive, teardown refuses rather than risk discarding unlanded work.
+# A Bitbucket pr= is read over REST instead of through a CLI, and a missing
+# credential is one such failed read rather than evidence of anything.
 # Uncommitted changes are never landed.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
@@ -1331,13 +1334,49 @@ pr_number_from_target() {
   printf '%s' "$n"
 }
 
+# Fetch the pull request's head into the worktree when the local object store
+# does not already have it. Each forge publishes its pull request heads under
+# its own ref namespace, so the ref is chosen from the parsed provider rather
+# than assumed to be GitHub's.
 ensure_commit_object() {
-  local target=$1 commit=$2 n
+  local target=$1 commit=$2 n ref
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null && return 0
-  n=$(pr_number_from_target "$target") || return 1
+  if fm_pr_url_parse "$target" && [ "$FM_PR_PROVIDER" = bitbucket ]; then
+    ref="refs/pull-requests/$FM_PR_NUMBER/from"
+  else
+    n=$(pr_number_from_target "$target") || return 1
+    ref="refs/pull/$n/head"
+  fi
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
+  git -C "$WT" fetch --quiet origin "$ref" >/dev/null 2>&1 || return 1
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null
+}
+
+# Is the worktree's current work contained in the pull request head that was
+# just proved merged? Either HEAD is an ancestor of that head, or every commit
+# the worktree has not pushed appears in it as the same patch (which is what a
+# rebase or a re-push leaves behind). Stated once for every forge.
+local_work_is_in_pr_head() {  # <target> <head>
+  local target=$1 head=$2 current
+  [ -n "$head" ] || return 1
+  ensure_commit_object "$target" "$head" || return 1
+  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null && return 0
+  unpushed_patches_are_in_pr_head "$head"
+}
+
+# Is the worktree's Bitbucket pull request merged, with the local work
+# contained in the head it merged? Reads the state and the source head from
+# Bitbucket's REST API. Returns non-zero for anything else, including an
+# unreadable pull request or a missing credential, so the caller falls back to
+# its provider-agnostic content check rather than treating a failed read as a
+# merge.
+bitbucket_pr_is_merged() {  # <path> <number>
+  local path=$1 number=$2
+  fm_pr_bitbucket_read_record "$path" "$number" || return 1
+  [ "$FM_PR_RECORD_MERGED" = true ] || return 1
+  fm_pr_bitbucket_read_head "$path" "$number" || return 1
+  local_work_is_in_pr_head "$PR_URL" "$FM_PR_RECORD_HEAD"
 }
 
 patch_id_for_commit() {
@@ -1373,18 +1412,24 @@ EOF
 }
 
 # Is the worktree's PR merged for local work contained in that PR? Resolves the
-# PR from the recorded pr= URL first, then from the branch name, and asks GitHub
-# for both the PR state and head. Returns non-zero when the PR is not merged, the
-# current work is not contained in the PR head, no PR is found, or any gh error
-# occurs - the caller then falls back to the content check.
+# PR from the recorded pr= URL first, then from the branch name, and asks the
+# forge for both the PR state and head. Returns non-zero when the PR is not
+# merged, the current work is not contained in the PR head, no PR is found, or
+# any forge read fails - the caller then falls back to the content check.
 pr_is_merged() {
-  local branch=$1 target view state remainder head resolved_url current landed=0
+  local branch=$1 target view state remainder head resolved_url bb_path bb_number
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
     target=$(pr_number_from_branch "$branch") || return 1
   fi
   [ -n "$target" ] || return 1
+  if [ -n "$PR_URL" ] && fm_pr_url_parse "$PR_URL" && [ "$FM_PR_PROVIDER" = bitbucket ]; then
+    bb_path=$FM_PR_PATH
+    bb_number=$FM_PR_NUMBER
+    bitbucket_pr_is_merged "$bb_path" "$bb_number"
+    return
+  fi
   view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || return 1
   state=${view%%$'\t'*}
   remainder=${view#*$'\t'}
@@ -1396,15 +1441,7 @@ pr_is_merged() {
     MERGED|merged) ;;
     *) return 1 ;;
   esac
-  [ -n "$head" ] || return 1
-  ensure_commit_object "$target" "$head" || return 1
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
-  if git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
-    landed=1
-  elif unpushed_patches_are_in_pr_head "$head"; then
-    landed=1
-  fi
-  [ "$landed" = 1 ] || return 1
+  local_work_is_in_pr_head "$target" "$head" || return 1
   if [ -z "$PR_URL" ]; then
     [ -n "$resolved_url" ] || return 1
     PR_URL=$resolved_url

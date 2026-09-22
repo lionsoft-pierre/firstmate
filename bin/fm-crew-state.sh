@@ -361,6 +361,28 @@ mr_read_record_bounded() {  # <host> <path> <number>
   FM_PR_RECORD_MERGED=$merged
 }
 
+bb_read_record_bounded() {  # <path> <number>
+  local record state merged credentials
+  # The bounded read runs in a fresh shell that does not inherit this script's
+  # own FM_HOME, so the credentials file is resolved here and handed over
+  # explicitly rather than re-derived from a home the child cannot see.
+  credentials=$(fm_pr_bitbucket_credentials_file 2>/dev/null) || credentials=
+  # shellcheck disable=SC2016  # The inner script expands after bash -c receives positional args.
+  if ! record=$(FM_BITBUCKET_CREDENTIALS="$credentials" fm_run_timed 5 bash -c '
+    . "$1"
+    fm_pr_bitbucket_read_record "$2" "$3" || exit 1
+    printf "state=%s\nmerged=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED"
+  ' _ "$SCRIPT_DIR/fm-pr-lib.sh" "$1" "$2" 2>/dev/null); then
+    return 1
+  fi
+  state=$(printf '%s\n' "$record" | sed -n 's/^state=//p' | head -1)
+  merged=$(printf '%s\n' "$record" | sed -n 's/^merged=//p' | head -1)
+  [ -n "$state" ] || return 1
+  [ "$merged" = true ] || [ "$merged" = false ] || return 1
+  FM_PR_RECORD_STATE=$state
+  FM_PR_RECORD_MERGED=$merged
+}
+
 passed_pr_detail() {
   local provider url host path number owner repo raw_pr state_lc
   raw_pr=$(strip_quotes "$(nm_field pr)")
@@ -386,7 +408,10 @@ passed_pr_detail() {
     && [ "$FM_PR_RETIRE_HOST" = "$host" ] \
     && [ "$FM_PR_RETIRE_PATH" = "$path" ] \
     && [ "$FM_PR_RETIRE_NUMBER" = "$number" ]; then
-    printf 'run passed: PR merged'
+    case "$FM_PR_RETIRE_RESULT" in
+      merged) printf 'run passed: PR merged' ;;
+      *)      printf 'run passed: PR %s' "$FM_PR_RETIRE_RESULT" ;;
+    esac
     return
   fi
   if [ "${FM_CREW_STATE_NO_FORGE:-0}" = 1 ]; then
@@ -427,6 +452,21 @@ passed_pr_detail() {
         open|opened) printf 'run passed: PR open' ;;
         closed)      printf 'run passed: PR closed' ;;
         *)           printf 'run passed: PR state %s' "$state_lc" ;;
+      esac
+      ;;
+    bitbucket)
+      if ! bb_read_record_bounded "$path" "$number"; then
+        printf 'run passed: PR state unknown (unreadable)'
+        return
+      fi
+      if [ "$FM_PR_RECORD_MERGED" = true ]; then
+        printf 'run passed: PR merged'
+        return
+      fi
+      state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
+      case "$state_lc" in
+        open) printf 'run passed: PR open' ;;
+        *)    printf 'run passed: PR %s' "$state_lc" ;;
       esac
       ;;
     *)

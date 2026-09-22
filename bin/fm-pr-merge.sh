@@ -4,7 +4,9 @@
 # The full canonical URL is parsed by bin/fm-pr-lib.sh. A GitHub pull request is
 # addressed through gh by the derived owner and repository; a GitLab merge
 # request is addressed through glab by the project URL rebuilt from the parsed
-# host and path, so any instance works and no host is hardcoded.
+# host and path, so any instance works and no host is hardcoded. A Bitbucket
+# pull request is refused outright: those merge through the Bitbucket side's own
+# process, and firstmate only watches for the result.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
 # --squash, --merge, --rebase, or --method after the optional -- separator.
@@ -138,6 +140,13 @@ if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
 fi
 URL=$FM_PR_URL
 PROVIDER=$FM_PR_PROVIDER
+# Bitbucket is watched but never merged from here, and the refusal comes before
+# anything is recorded or armed so a Bitbucket URL leaves no half-prepared
+# merge behind.
+if [ "$PROVIDER" = bitbucket ]; then
+  echo "error: firstmate does not merge Bitbucket pull requests; $URL is merged by the Bitbucket side's own process, and bin/fm-pr-check.sh watches it until that happens" >&2
+  exit 2
+fi
 PR_HOST=$FM_PR_HOST
 PR_PATH=$FM_PR_PATH
 PR_OWNER=$FM_PR_OWNER
