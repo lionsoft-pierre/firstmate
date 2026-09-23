@@ -403,6 +403,9 @@ $description
 
 ## Firstmate spec
 Verify projected workspace behavior for $id.
+
+# Definition of done
+Delivery contract: mode=no-mistakes
 EOF
 }
 
