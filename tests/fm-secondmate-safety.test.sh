@@ -266,7 +266,7 @@ EOF
 }
 
 test_home_seed_uses_treehouse_acquired_home() {
-  local home acquired acquired_abs fakebin log lease out root
+  local home acquired acquired_abs fakebin log lease out
   home="$TMP_ROOT/dash-home"
   acquired="$TMP_ROOT/dash-acquired-home"
   mkdir -p "$home/projects" "$home/data" "$home/state"
@@ -286,13 +286,10 @@ test_home_seed_uses_treehouse_acquired_home() {
   acquired_abs=$(cd "$acquired" && pwd -P)
   printf '%s\n' "$out" | grep -F "home=$acquired_abs" >/dev/null || fail "seed did not report acquired home"
   grep -F 'treehouse get --lease --lease-holder dash' "$log" >/dev/null || fail "seed did not durably lease a home under the secondmate id"
-  # The lease must come from THIS home's own pool root, or a new secondmate home
-  # can be a slot another home's checkout grew (docs/configuration.md "Worktree
-  # pool root").
-  root=$(FM_HOME="$home" bash -c '. "$1"; fm_treehouse_root "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$home") \
-    || fail "the seeding home could not resolve its own pool root"
-  grep -F -- "--root $root" "$log" >/dev/null \
-    || fail "seed leased the home without naming this home's own pool root"$'\n'"$(cat "$log")"
+  # A root home leases from Treehouse's own root and passes no --root at all
+  # (docs/configuration.md "Worktree pool root").
+  grep -F -- '--root' "$log" >/dev/null \
+    && fail "a root home leased its secondmate home from a per-home pool root instead of Treehouse's own"$'\n'"$(cat "$log")"
   [ -f "$lease" ] || fail "seed did not record a treehouse lease"
   [ "$(cat "$lease")" = dash ] || fail "seed did not set the lease holder to the secondmate id"
   [ -f "$acquired/.fm-secondmate-home" ] || fail "seed did not mark acquired home"

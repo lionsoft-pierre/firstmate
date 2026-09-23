@@ -138,11 +138,12 @@ Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, whil
 
 Every disposable worker copy, and every home leased for a secondmate, is a slot in a Treehouse pool, and those pools live OUTSIDE the home.
 Treehouse keys a pool by repository identity and shares every pool under one root across all the checkouts that reach it, so two homes with their own clones of one repository under a single root are handed each other's slots; `bin/fm-wake-lib.sh`'s `fm_treehouse_root` owns that reasoning and the exact derivation.
-Each home therefore gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise.
-An absolute path in `config/treehouse-root` replaces that default for this home; pointing two homes at one path re-creates the sharing, and `bin/fm-spawn.sh` then refuses the foreign slot instead of starting a worker in another home's clone.
+The root home keeps Treehouse's own root, exactly as before: its spawns pass no `--root`, so its existing warm pools keep handing out their slots and every lease it holds, including the leased secondmate homes, is untouched.
+Every secondmate home instead gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise, so it only ever leases worktrees of its own clones and is never handed a slot of the root home's.
+An absolute path in `config/treehouse-root` overrides the root for either kind of home; pointing two homes at one path re-creates the sharing, and `bin/fm-spawn.sh` then refuses the foreign slot instead of starting a worker in another home's clone.
 
-Homes and pools that already exist keep working and are never migrated, moved, or deleted: a pool grown under an earlier root stays where it is, and returning a slot resolves its pool from the worktree path rather than from any configured root.
-A home whose new root has no pool yet simply grows one from its own clone on the next spawn.
+Pools that already exist are never migrated, moved, or deleted, and returning a slot resolves its pool from the worktree path rather than from any configured root.
+A secondmate home whose root has no pool yet simply grows one from its own clone on the next spawn.
 
 ## Calm preference (config/calm)
 

@@ -209,10 +209,10 @@
 #   itself a linked worktree of the project repository still launches. A pane
 #   that never reaches an isolated worktree refuses at the end of that wait,
 #   naming the last path seen and why it was rejected.
-#   The acquisition itself is pinned to this home's own Treehouse pool root
+#   A secondmate home's acquisition is pinned to its own Treehouse pool root
 #   (bin/fm-wake-lib.sh's fm_treehouse_root, config/treehouse-root), passed on
 #   the command typed into the pane rather than exported into the shared
-#   session, and a slot that still turns out to be a worktree of another
+#   session, while the root home keeps Treehouse's own root; a slot that still turns out to be a worktree of another
 #   checkout of the same repository is returned and refused.
 #   That placement is proven only at launch. Every ship or scout pane therefore
 #   also receives `export FM_TASK_ID=<task-id>` before the launch command, on
@@ -3850,13 +3850,19 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  # --root pins the acquisition to THIS home's pool (fm_treehouse_root owns why
-  # a home must not share one). It is passed on the command rather than exported
-  # into the pane's environment because every session provider creates its panes
-  # in one shared session: an environment carrying this home's root would follow
-  # every other home's spawns in that session too.
-  spawn_send_text_line "$WT_TARGET" \
-    "treehouse get --root '${SPAWN_TREEHOUSE_ROOT//\'/\'\\\'\'}'"
+  # --root pins the acquisition to THIS home's pool (fm_treehouse_root owns
+  # which homes get one and why); an empty root means Treehouse's own, so the
+  # root home types the same plain command it always has. It is passed on the
+  # command rather than exported into the pane's environment because every
+  # session provider creates its panes in one shared session: an environment
+  # carrying this home's root would follow every other home's spawns in that
+  # session too.
+  if [ -n "$SPAWN_TREEHOUSE_ROOT" ]; then
+    spawn_send_text_line "$WT_TARGET" \
+      "treehouse get --root '${SPAWN_TREEHOUSE_ROOT//\'/\'\\\'\'}'"
+  else
+    spawn_send_text_line "$WT_TARGET" "treehouse get"
+  fi
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -3944,7 +3950,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     else
       spawn_foreign_slot_note="it could not be returned to the pool and is still held"
     fi
-    echo "error: treehouse get handed task $ID the worktree '$WT', which belongs to '${spawn_wt_common:-an unresolvable repository}' rather than to the spawning project '$PROJ_ABS' (pool root $SPAWN_TREEHOUSE_ROOT); $spawn_foreign_slot_note; refusing to launch a worker into another checkout's copy; inspect window $T" >&2
+    echo "error: treehouse get handed task $ID the worktree '$WT', which belongs to '${spawn_wt_common:-an unresolvable repository}' rather than to the spawning project '$PROJ_ABS' (pool root ${SPAWN_TREEHOUSE_ROOT:-the Treehouse default}); $spawn_foreign_slot_note; refusing to launch a worker into another checkout's copy; inspect window $T" >&2
     exit 1
   fi
 

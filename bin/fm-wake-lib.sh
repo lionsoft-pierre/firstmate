@@ -1211,30 +1211,39 @@ fm_firstmate_root_home() {
 # root take turns being handed each other's slots. The failure is intermittent -
 # a pool with no free slot grows one from the asking checkout and the spawn
 # works - so the same command succeeds or refuses depending only on who else is
-# holding slots at that moment. One root per home removes the sharing: every
-# slot a home can reach was grown from that home's own clones.
+# holding slots at that moment.
 #
-# The default root is DERIVED from the home's physical path rather than placed
-# inside it. A firstmate home is itself a git checkout - the primary checkout
-# for the root home, a leased worktree for a secondmate - so a pool nested in
-# one would put project worktrees, firstmate's own included, inside the working
-# tree firstmate operates from. It sits under TREEHOUSE_ROOT when the environment
-# sets it to an absolute path, and under the home directory otherwise. Only that
-# environment variable is followed: a root set in Treehouse's own config file or
-# in a repo's treehouse.toml is overridden by the --root this value feeds, so
-# config/treehouse-root is the way to place a home's pools anywhere else.
+# The root home keeps Treehouse's own root, exactly as before: this echoes
+# nothing for it and callers then pass no --root at all, so Treehouse resolves
+# its default, TREEHOUSE_ROOT, and its config the way it always has. The root
+# home's existing warm pools keep handing out their slots, and every lease it
+# already holds - including the leased secondmate homes it later returns - is
+# untouched. Every NON-root home (a secondmate home, which reaches a different
+# root home through its .fm-secondmate-parent chain) gets a root of its own
+# instead, so every slot it can reach was grown from its own clones and it can
+# never be handed a slot of the root home's.
 #
-# config/treehouse-root overrides the whole path with an absolute directory.
-# Pointing two homes at one root re-creates the sharing described above;
-# bin/fm-spawn.sh refuses the resulting foreign slot rather than launching a
-# worker into another home's clone.
+# That derived root is placed beside the home rather than inside it. A
+# secondmate home is itself a leased worktree of firstmate, so a pool nested in
+# it would put project worktrees, firstmate's own included, inside the working
+# tree firstmate operates from. It sits under TREEHOUSE_ROOT when the
+# environment sets it to an absolute path, and under the home directory
+# otherwise. Only that environment variable is followed: a root set in
+# Treehouse's own config file or in a repo's treehouse.toml is overridden by the
+# --root this value feeds, so config/treehouse-root is the way to place a
+# secondmate home's pools anywhere else.
 #
-# Echoes the value to pass to `treehouse --root`. Treehouse places the pools
-# themselves in a `.treehouse` directory beneath it, so the pool layout every
-# other helper here relies on (<pool>/<slot>/<repo> beside treehouse-state.json)
-# is unchanged.
+# config/treehouse-root overrides either kind of home with an absolute
+# directory. Pointing two homes at one root re-creates the sharing described
+# above; bin/fm-spawn.sh refuses the resulting foreign slot rather than
+# launching a worker into another home's clone.
+#
+# Echoes the value to pass to `treehouse --root`, or nothing when no --root is
+# to be passed. Treehouse places the pools themselves in a `.treehouse`
+# directory beneath it, so the pool layout every other helper here relies on
+# (<pool>/<slot>/<repo> beside treehouse-state.json) is unchanged.
 fm_treehouse_root() {  # [home] [config-dir]
-  local home=${1:-${FM_HOME:-}} config=${2:-} configured base id hash
+  local home=${1:-${FM_HOME:-}} config=${2:-} configured root base id hash
   [ -n "$home" ] || return 1
   home=$(CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || return 1
   [ -n "$config" ] || config=${FM_CONFIG_OVERRIDE:-$home/config}
@@ -1250,6 +1259,8 @@ fm_treehouse_root() {  # [home] [config-dir]
       esac
     fi
   fi
+  root=$(fm_firstmate_root_home "$home") || return 1
+  [ "$root" != "$home" ] || return 0
   # A relative TREEHOUSE_ROOT means "a pool inside the repo" to Treehouse, which
   # is the one thing this root must never be, so only an absolute value is
   # honored as the base.

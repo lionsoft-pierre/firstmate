@@ -11,10 +11,11 @@
 # a Claude launch instead stops at bin/fm-claude-trust.sh's structural refusal,
 # which reads as a trust problem and names nothing about the pool.
 #
-# These tests pin the three parts of the fix: each home resolves its own pool
-# root outside itself, fm-spawn delivers that root to the pane that actually
-# runs `treehouse get`, and a slot backed by a foreign checkout is returned and
-# refused rather than launched into.
+# These tests pin the three parts of the fix: the root home keeps Treehouse's
+# own root while each secondmate home resolves its own pool root outside
+# itself, fm-spawn delivers that root to the pane that actually runs
+# `treehouse get` (and types the plain command for the root home), and a slot
+# backed by a foreign checkout is returned and refused rather than launched into.
 #
 # The last test drives the real treehouse binary and is the reproduction itself:
 # one shared root hands home B a worktree of home A's clone, and the per-home
@@ -33,9 +34,11 @@ treehouse_root_for() {  # <home> [config-dir]
     '. "$1"; fm_treehouse_root "$2" "${3:-}"' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "${2:-}"
 }
 
-# One throwaway world: an origin, two homes whose clones of it carry the SAME
-# directory name (the shape that makes both homes resolve one pool), and a
-# spawn-world fakebin per home.
+# One throwaway world: an origin, a root home and two secondmate homes under it
+# whose clones of that origin all carry the SAME directory name (the shape that
+# makes every home resolve one pool), and a spawn-world fakebin per home. Each
+# secondmate home carries a real local .fm-secondmate-parent record naming the
+# root home (bin/fm-secondmate-parent-lib.sh owns the fields).
 make_world() {  # <name>
   local name=$1 world home
   world="$TMP_ROOT/$name"
@@ -46,23 +49,40 @@ make_world() {  # <name>
   git -C "$world/src" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -qm initial
   git clone --quiet --bare "$world/src" "$world/origin.git"
-  for home in A B; do
+  for home in R A B; do
     mkdir -p "$world/home$home/projects"
     git clone --quiet "file://$world/origin.git" "$world/home$home/projects/app"
     fm_test_spawn_home "$world/home$home" codex
+  done
+  for home in A B; do
+    printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$world/homeR" \
+      > "$world/home$home/.fm-secondmate-parent"
   done
   printf '%s\n' "$world"
 }
 
 # --- the root each home resolves -------------------------------------------
 
-test_each_home_resolves_its_own_root_outside_itself() {
-  local world root_a root_b again config
+test_root_home_keeps_treehouse_own_root() {
+  local world root_r
+
+  world=$(make_world rootroot)
+  root_r=$(treehouse_root_for "$world/homeR") \
+    || fail "the root home could not resolve its pool root"
+  [ -z "$root_r" ] \
+    || fail "the root home resolved a per-home pool root ($root_r) instead of Treehouse's own"
+  pass "the root home resolves no per-home root, so Treehouse's own root stays in effect"
+}
+
+test_each_secondmate_home_resolves_its_own_root_outside_itself() {
+  local world root_a root_b again config home
 
   world=$(make_world roots)
   root_a=$(treehouse_root_for "$world/homeA") || fail "home A could not resolve a pool root"
   root_b=$(treehouse_root_for "$world/homeB") || fail "home B could not resolve a pool root"
 
+  [ -n "$root_a" ] && [ -n "$root_b" ] \
+    || fail "a secondmate home resolved no pool root of its own (A='$root_a' B='$root_b')"
   [ "$root_a" != "$root_b" ] \
     || fail "two homes resolved the same pool root ($root_a), so they still share slots"
 
@@ -75,15 +95,19 @@ test_each_home_resolves_its_own_root_outside_itself() {
     /*) ;;
     *) fail "home A's pool root is not absolute: $root_a" ;;
   esac
-  pass "each home resolves its own absolute pool root, stable across calls and outside the home"
+  pass "each secondmate home resolves its own absolute pool root, stable across calls and outside the home"
+
+  for home in R A; do
+    config="$world/home$home/config"
+    printf '%s\n' "$world/configured-root" > "$config/treehouse-root"
+    root_a=$(treehouse_root_for "$world/home$home" "$config") \
+      || fail "an absolute config/treehouse-root was refused for home $home"
+    [ "$root_a" = "$world/configured-root" ] \
+      || fail "config/treehouse-root did not override home $home's root: $root_a"
+    rm -f "$config/treehouse-root"
+  done
 
   config="$world/homeA/config"
-  printf '%s\n' "$world/configured-root" > "$config/treehouse-root"
-  root_a=$(treehouse_root_for "$world/homeA" "$config") \
-    || fail "an absolute config/treehouse-root was refused"
-  [ "$root_a" = "$world/configured-root" ] \
-    || fail "config/treehouse-root did not override the derived root: $root_a"
-
   printf '  %s  \n' "$world/My Pools" > "$config/treehouse-root"
   root_a=$(treehouse_root_for "$world/homeA" "$config") \
     || fail "an absolute config/treehouse-root containing a space was refused"
@@ -95,7 +119,7 @@ test_each_home_resolves_its_own_root_outside_itself() {
     fail "a relative config/treehouse-root was accepted instead of refused"
   fi
   rm -f "$config/treehouse-root"
-  pass "config/treehouse-root overrides the derived root and refuses a non-absolute value"
+  pass "config/treehouse-root overrides either home kind's root and refuses a non-absolute value"
 }
 
 # --- what fm-spawn types into the pane -------------------------------------
@@ -123,6 +147,7 @@ test_spawn_types_the_home_pool_root_into_the_pane() {
   slot=$(lay_out_pool_slot "$world/homeB/projects/app" "$world/checkout" "$world/slots")
   mkdir -p "$world/homeB/user-home"
   expected=$(FM_SPAWN_HOME_DIR="$world/homeB/user-home" treehouse_root_for "$world/homeB")
+  [ -n "$expected" ] || fail "the secondmate home resolved no pool root to type"
 
   pane_log="$world/pane.log"
   out=$(FM_FAKE_PANE_LOG="$pane_log" \
@@ -134,18 +159,48 @@ test_spawn_types_the_home_pool_root_into_the_pane() {
     || fail "the pane was not told which pool root to acquire from"$'\n'"--- pane log ---"$'\n'"$(cat "$pane_log")"
   grep -Fxq 'treehouse get' "$pane_log" \
     && fail "the pane still received a rootless acquisition"$'\n'"$(cat "$pane_log")"
-  pass "fm-spawn types this home's pool root into the pane that runs the acquisition"
+  pass "fm-spawn types a secondmate home's own pool root into the pane that runs the acquisition"
+}
+
+test_root_home_spawn_types_a_plain_acquisition() {
+  local world id slot fakebin pane_log out status
+
+  world=$(make_world plain)
+  id='perhomepool-plain-r1'
+  fm_test_spawn_brief "$world/homeR" "$id"
+  fakebin=$(make_spawn_fakebin "$world/fake")
+  git -C "$world/homeR/projects/app" worktree add --quiet --detach "$world/checkout" HEAD
+  slot=$(lay_out_pool_slot "$world/homeR/projects/app" "$world/checkout" "$world/slots")
+
+  pane_log="$world/pane.log"
+  out=$(FM_FAKE_PANE_LOG="$pane_log" \
+    fm_test_run_spawn "$world/homeR" "$slot" "$fakebin" "$id" "$world/homeR/projects/app" --scout)
+  status=$?
+  expect_code 0 "$status" "the root home's spawn into its own slot should launch"$'\n'"$out"
+
+  grep -Fxq 'treehouse get' "$pane_log" \
+    || fail "the root home's pane did not receive the plain acquisition"$'\n'"--- pane log ---"$'\n'"$(cat "$pane_log")"
+  grep -Fq -- '--root' "$pane_log" \
+    && fail "the root home's pane was pinned to a per-home pool root"$'\n'"$(cat "$pane_log")"
+  pass "fm-spawn types the plain acquisition for the root home, leaving Treehouse's own root in effect"
 }
 
 # --- a slot backed by another home's clone ---------------------------------
 
 test_spawn_refuses_a_slot_backed_by_another_homes_clone() {
-  local world id slot fakebin out status
+  local world id slot fakebin out status treehouse_log
 
   world=$(make_world foreign)
   id='perhomepool-foreign-r1'
   fm_test_spawn_brief "$world/homeB" "$id"
   fakebin=$(make_spawn_fakebin "$world/fake")
+  treehouse_log="$world/treehouse.argv"
+  cat > "$fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> '$treehouse_log'
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
   # The slot is a worktree of home A's clone, exactly as a shared pool hands it
   # back; home B spawns into its OWN clone of the same origin.
   git -C "$world/homeA/projects/app" worktree add --quiet --detach "$world/checkout" HEAD
@@ -163,6 +218,8 @@ test_spawn_refuses_a_slot_backed_by_another_homes_clone() {
     || fail "the refused spawn published a task record"
   [ ! -e "$world/slots/1/.fm-slot-owner" ] \
     || fail "the refused spawn claimed a slot it does not own"
+  grep -Fxq "return --force $slot" "$treehouse_log" \
+    || fail "the refused spawn did not return exactly the slot it was handed"$'\n'"--- treehouse argv ---"$'\n'"$(cat "$treehouse_log" 2>/dev/null)"
   pass "fm-spawn refuses a pool slot backed by another home's clone instead of launching into it"
 }
 
@@ -173,6 +230,10 @@ test_real_pool_hands_a_shared_root_the_other_homes_clone() {
 
   if ! command -v treehouse >/dev/null 2>&1; then
     echo "skip: treehouse not found (required to reproduce pool allocation)"
+    return 0
+  fi
+  if ! treehouse --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--root([^[:alnum:]_-]|$)'; then
+    echo "skip: installed treehouse has no --root (2.2.0+ required to reproduce pool allocation)"
     return 0
   fi
 
@@ -220,7 +281,9 @@ test_real_pool_hands_a_shared_root_the_other_homes_clone() {
   pass "real treehouse: the acquisition fm-spawn types lands in this home's own clone"
 }
 
-test_each_home_resolves_its_own_root_outside_itself
+test_root_home_keeps_treehouse_own_root
+test_each_secondmate_home_resolves_its_own_root_outside_itself
 test_spawn_types_the_home_pool_root_into_the_pane
+test_root_home_spawn_types_a_plain_acquisition
 test_spawn_refuses_a_slot_backed_by_another_homes_clone
 test_real_pool_hands_a_shared_root_the_other_homes_clone
