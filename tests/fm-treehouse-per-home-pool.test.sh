@@ -34,11 +34,13 @@ treehouse_root_for() {  # <home> [config-dir]
     '. "$1"; fm_treehouse_root "$2" "${3:-}"' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "${2:-}"
 }
 
-# One throwaway world: an origin, a root home and two secondmate homes under it
+# One throwaway world: an origin, a primary home and three secondmate homes
 # whose clones of that origin all carry the SAME directory name (the shape that
 # makes every home resolve one pool), and a spawn-world fakebin per home. Each
-# secondmate home carries a real local .fm-secondmate-parent record naming the
-# root home (bin/fm-secondmate-parent-lib.sh owns the fields).
+# secondmate home carries the .fm-secondmate-home marker seeding leaves behind.
+# Homes A and B also carry a local .fm-secondmate-parent record naming the
+# primary home; home C carries a route=remote record, the shape of a home
+# seeded on another machine (bin/fm-secondmate-parent-lib.sh owns the fields).
 make_world() {  # <name>
   local name=$1 world home
   world="$TMP_ROOT/$name"
@@ -49,15 +51,20 @@ make_world() {  # <name>
   git -C "$world/src" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -qm initial
   git clone --quiet --bare "$world/src" "$world/origin.git"
-  for home in R A B; do
+  for home in R A B C; do
     mkdir -p "$world/home$home/projects"
     git clone --quiet "file://$world/origin.git" "$world/home$home/projects/app"
     fm_test_spawn_home "$world/home$home" codex
+  done
+  for home in A B C; do
+    printf 'sm%s\n' "$home" > "$world/home$home/.fm-secondmate-home"
   done
   for home in A B; do
     printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$world/homeR" \
       > "$world/home$home/.fm-secondmate-parent"
   done
+  printf 'schema=fm-secondmate-parent.v1\nroute=remote\nparent_host=parent-machine\n' \
+    > "$world/homeC/.fm-secondmate-parent"
   printf '%s\n' "$world"
 }
 
@@ -72,6 +79,39 @@ test_root_home_keeps_treehouse_own_root() {
   [ -z "$root_r" ] \
     || fail "the root home resolved a per-home pool root ($root_r) instead of Treehouse's own"
   pass "the root home resolves no per-home root, so Treehouse's own root stays in effect"
+}
+
+test_remote_seeded_secondmate_home_resolves_its_own_root() {
+  local world root_r root_a root_c
+
+  world=$(make_world remote)
+  root_r=$(treehouse_root_for "$world/homeR") || fail "the primary home could not resolve its pool root"
+  root_a=$(treehouse_root_for "$world/homeA") || fail "home A could not resolve a pool root"
+  root_c=$(treehouse_root_for "$world/homeC") \
+    || fail "the remote-seeded secondmate home could not resolve a pool root"
+
+  [ -n "$root_c" ] \
+    || fail "the remote-seeded secondmate home was classed as a primary home and resolved no pool root"
+  [ "$root_c" != "$root_r" ] && [ "$root_c" != "$root_a" ] \
+    || fail "the remote-seeded home shares a pool root with another home (C='$root_c' R='$root_r' A='$root_a')"
+  case "$root_c" in
+    "$world/homeC"/*) fail "the remote-seeded home's pool root sits inside the home itself: $root_c" ;;
+    /*) ;;
+    *) fail "the remote-seeded home's pool root is not absolute: $root_c" ;;
+  esac
+  pass "a remote-seeded secondmate home resolves its own pool root, distinct from the primary home's and every other home's"
+}
+
+test_symlinked_secondmate_marker_is_refused() {
+  local world
+
+  world=$(make_world symlinked)
+  printf 'smR\n' > "$world/planted-marker"
+  ln -s "$world/planted-marker" "$world/homeR/.fm-secondmate-home"
+  if treehouse_root_for "$world/homeR" >/dev/null 2>&1; then
+    fail "a symlinked .fm-secondmate-home marker was followed instead of refused"
+  fi
+  pass "a symlinked .fm-secondmate-home marker is refused rather than used to classify the home"
 }
 
 test_each_secondmate_home_resolves_its_own_root_outside_itself() {
@@ -283,6 +323,8 @@ test_real_pool_hands_a_shared_root_the_other_homes_clone() {
 
 test_root_home_keeps_treehouse_own_root
 test_each_secondmate_home_resolves_its_own_root_outside_itself
+test_remote_seeded_secondmate_home_resolves_its_own_root
+test_symlinked_secondmate_marker_is_refused
 test_spawn_types_the_home_pool_root_into_the_pane
 test_root_home_spawn_types_a_plain_acquisition
 test_spawn_refuses_a_slot_backed_by_another_homes_clone

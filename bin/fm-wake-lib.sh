@@ -1213,15 +1213,23 @@ fm_firstmate_root_home() {
 # works - so the same command succeeds or refuses depending only on who else is
 # holding slots at that moment.
 #
-# The root home keeps Treehouse's own root, exactly as before: this echoes
-# nothing for it and callers then pass no --root at all, so Treehouse resolves
-# its default, TREEHOUSE_ROOT, and its config the way it always has. The root
-# home's existing warm pools keep handing out their slots, and every lease it
-# already holds - including the leased secondmate homes it later returns - is
-# untouched. Every NON-root home (a secondmate home, which reaches a different
-# root home through its .fm-secondmate-parent chain) gets a root of its own
-# instead, so every slot it can reach was grown from its own clones and it can
-# never be handed a slot of the root home's.
+# The split is primary home versus secondmate home, decided by the home's own
+# identity: the .fm-secondmate-home marker every seeded secondmate home carries,
+# local or remote-seeded alike (bin/fm-backend-hometag-lib.sh classifies home
+# kind from the same marker). It never depends on .fm-secondmate-parent, so a
+# remote-seeded home whose parent lives on another machine is still classed as
+# the secondmate home it is. The marker is judged as a file: it must be a
+# regular file, and a symlink or any other kind of entry at that path is
+# refused rather than guessed at.
+#
+# A primary home (no marker) keeps Treehouse's own root, exactly as before: this
+# echoes nothing for it and callers then pass no --root at all, so Treehouse
+# resolves its default, TREEHOUSE_ROOT, and its config the way it always has.
+# The primary home's existing warm pools keep handing out their slots, and every
+# lease it already holds - including the leased secondmate homes it later
+# returns - is untouched. Every secondmate home gets a root of its own instead,
+# so every slot it can reach was grown from its own clones and it can never be
+# handed a slot of the primary home's or of another secondmate home's.
 #
 # That derived root is placed beside the home rather than inside it. A
 # secondmate home is itself a leased worktree of firstmate, so a pool nested in
@@ -1243,7 +1251,7 @@ fm_firstmate_root_home() {
 # directory beneath it, so the pool layout every other helper here relies on
 # (<pool>/<slot>/<repo> beside treehouse-state.json) is unchanged.
 fm_treehouse_root() {  # [home] [config-dir]
-  local home=${1:-${FM_HOME:-}} config=${2:-} configured root base id hash
+  local home=${1:-${FM_HOME:-}} config=${2:-} configured marker base id hash
   [ -n "$home" ] || return 1
   home=$(CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || return 1
   [ -n "$config" ] || config=${FM_CONFIG_OVERRIDE:-$home/config}
@@ -1259,8 +1267,13 @@ fm_treehouse_root() {  # [home] [config-dir]
       esac
     fi
   fi
-  root=$(fm_firstmate_root_home "$home") || return 1
-  [ "$root" != "$home" ] || return 0
+  marker="$home/.fm-secondmate-home"
+  if [ -L "$marker" ]; then
+    return 1
+  elif [ ! -e "$marker" ]; then
+    return 0
+  fi
+  [ -f "$marker" ] || return 1
   # A relative TREEHOUSE_ROOT means "a pool inside the repo" to Treehouse, which
   # is the one thing this root must never be, so only an absolute value is
   # honored as the base.

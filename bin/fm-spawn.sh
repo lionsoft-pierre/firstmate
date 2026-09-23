@@ -212,8 +212,9 @@
 #   A secondmate home's acquisition is pinned to its own Treehouse pool root
 #   (bin/fm-wake-lib.sh's fm_treehouse_root, config/treehouse-root), passed on
 #   the command typed into the pane rather than exported into the shared
-#   session, while the root home keeps Treehouse's own root; a slot that still turns out to be a worktree of another
-#   checkout of the same repository is returned and refused.
+#   session, while a primary home keeps Treehouse's own root; a slot that
+#   still turns out to be a worktree of another checkout of the same repository
+#   is returned and refused.
 #   That placement is proven only at launch. Every ship or scout pane therefore
 #   also receives `export FM_TASK_ID=<task-id>` before the launch command, on
 #   the same channel as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
@@ -3852,7 +3853,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # --root pins the acquisition to THIS home's pool (fm_treehouse_root owns
   # which homes get one and why); an empty root means Treehouse's own, so the
-  # root home types the same plain command it always has. It is passed on the
+  # primary home types the same plain command it always has. It is passed on the
   # command rather than exported into the pane's environment because every
   # session provider creates its panes in one shared session: an environment
   # carrying this home's root would follow every other home's spawns in that

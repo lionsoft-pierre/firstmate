@@ -259,7 +259,7 @@ Codex App support is recorded in `docs/codex-app-backend.md`; it is not selectab
 
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees for tmux, herdr, zellij, and cmux tasks, while Orca creates its own worktrees for `backend=orca`.
 The [`fm-spawn.sh` header](../bin/fm-spawn.sh) owns ship/scout worktree isolation and fresh-base refusal rules, including spawns from linked homes.
-Each secondmate home leases from its own pool root while the root home keeps Treehouse's own, because a pool is keyed by repository identity and shared by every checkout that reaches its root; [Worktree pool root](configuration.md#worktree-pool-root-configtreehouse-root) owns that boundary and `bin/fm-wake-lib.sh`'s `fm_treehouse_root` owns the derivation.
+Each secondmate home leases from its own pool root while the primary home keeps Treehouse's own, because a pool is keyed by repository identity and shared by every checkout that reaches its root; [Worktree pool root](configuration.md#worktree-pool-root-configtreehouse-root) owns that boundary and `bin/fm-wake-lib.sh`'s `fm_treehouse_root` owns the derivation.
 Portable regressions live in [`tests/fm-spawn-pool-base-freshen.test.sh`](../tests/fm-spawn-pool-base-freshen.test.sh) for spawn isolation and base freshness, [`tests/fm-treehouse-per-home-pool.test.sh`](../tests/fm-treehouse-per-home-pool.test.sh) for per-home pool roots, and [`tests/fm-control-relaunch.test.sh`](../tests/fm-control-relaunch.test.sh) for preserving the recorded copy on relaunch.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.

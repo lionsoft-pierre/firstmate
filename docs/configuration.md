@@ -138,8 +138,9 @@ Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, whil
 
 Every disposable worker copy, and every home leased for a secondmate, is a slot in a Treehouse pool, and those pools live OUTSIDE the home.
 Treehouse keys a pool by repository identity and shares every pool under one root across all the checkouts that reach it, so two homes with their own clones of one repository under a single root are handed each other's slots; `bin/fm-wake-lib.sh`'s `fm_treehouse_root` owns that reasoning and the exact derivation.
-The root home keeps Treehouse's own root, exactly as before: its spawns pass no `--root`, so its existing warm pools keep handing out their slots and every lease it holds, including the leased secondmate homes, is untouched.
-Every secondmate home instead gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise, so it only ever leases worktrees of its own clones and is never handed a slot of the root home's.
+The split is primary home versus secondmate home, identified by the `.fm-secondmate-home` marker every seeded secondmate home carries, whether it was seeded locally or on a remote host; it never depends on the parent record or on whether the parent is reachable.
+A primary home keeps Treehouse's own root, exactly as before: its spawns pass no `--root`, so its existing warm pools keep handing out their slots and every lease it holds, including the leased secondmate homes, is untouched.
+Every secondmate home, remote-seeded ones included, instead gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise, so it only ever leases worktrees of its own clones and is never handed a slot of another home's.
 An absolute path in `config/treehouse-root` overrides the root for either kind of home; pointing two homes at one path re-creates the sharing, and `bin/fm-spawn.sh` then refuses the foreign slot instead of starting a worker in another home's clone.
 
 Pools that already exist are never migrated, moved, or deleted, and returning a slot resolves its pool from the worktree path rather than from any configured root.
