@@ -1219,8 +1219,8 @@ fm_firstmate_root_home() {
 # kind from the same marker). It never depends on .fm-secondmate-parent, so a
 # remote-seeded home whose parent lives on another machine is still classed as
 # the secondmate home it is. The marker is judged as a file: it must be a
-# regular file, and a symlink or any other kind of entry at that path is
-# refused rather than guessed at.
+# regular file carrying a secondmate id, and a symlink, an empty marker, or any
+# other kind of entry at that path is refused rather than guessed at.
 #
 # A primary home (no marker) keeps Treehouse's own root, exactly as before: this
 # echoes nothing for it and callers then pass no --root at all, so Treehouse
@@ -1230,6 +1230,12 @@ fm_firstmate_root_home() {
 # returns - is untouched. Every secondmate home gets a root of its own instead,
 # so every slot it can reach was grown from its own clones and it can never be
 # handed a slot of the primary home's or of another secondmate home's.
+#
+# The derived root is keyed by the home's physical path AND the secondmate id
+# its marker records. A secondmate home is itself a leased slot, and slot paths
+# are reused, so a path alone would hand a later secondmate leased into the same
+# slot the earlier home's pool, whose slots are worktrees of clones that home no
+# longer has.
 #
 # That derived root is placed beside the home rather than inside it. A
 # secondmate home is itself a leased worktree of firstmate, so a pool nested in
@@ -1274,15 +1280,16 @@ fm_treehouse_root() {  # [home] [config-dir]
     return 0
   fi
   [ -f "$marker" ] || return 1
+  id=$(tr -d '[:space:]' < "$marker" 2>/dev/null) || return 1
+  [ -n "$id" ] || return 1
   # A relative TREEHOUSE_ROOT means "a pool inside the repo" to Treehouse, which
   # is the one thing this root must never be, so only an absolute value is
   # honored as the base.
   base=${TREEHOUSE_ROOT:-}
   case "$base" in /*) ;; *) base=${HOME:-} ;; esac
   [ -n "$base" ] || return 1
-  hash=$(printf '%s' "$home" | git hash-object --stdin 2>/dev/null) || return 1
-  id="$(basename "$home")-${hash:0:6}"
-  printf '%s/.treehouse-homes/%s\n' "$base" "$id"
+  hash=$(printf '%s\n%s' "$home" "$id" | git hash-object --stdin 2>/dev/null) || return 1
+  printf '%s/.treehouse-homes/%s-%s\n' "$base" "$(basename "$home")" "${hash:0:6}"
 }
 
 # The one lock serializing Treehouse slot allocation and return for a project.

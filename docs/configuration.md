@@ -140,11 +140,17 @@ Every disposable worker copy, and every home leased for a secondmate, is a slot 
 Treehouse keys a pool by repository identity and shares every pool under one root across all the checkouts that reach it, so two homes with their own clones of one repository under a single root are handed each other's slots; `bin/fm-wake-lib.sh`'s `fm_treehouse_root` owns that reasoning and the exact derivation.
 The split is primary home versus secondmate home, identified by the `.fm-secondmate-home` marker every seeded secondmate home carries, whether it was seeded locally or on a remote host; it never depends on the parent record or on whether the parent is reachable.
 A primary home keeps Treehouse's own root, exactly as before: its spawns pass no `--root`, so its existing warm pools keep handing out their slots and every lease it holds, including the leased secondmate homes, is untouched.
-Every secondmate home, remote-seeded ones included, instead gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise, so it only ever leases worktrees of its own clones and is never handed a slot of another home's.
+Every secondmate home, remote-seeded ones included, instead gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, with the hash taken over the home's path and the secondmate id its marker records so a later secondmate leased into the same slot path never inherits an earlier home's pool, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise, so it only ever leases worktrees of its own clones and is never handed a slot of another home's.
 An absolute path in `config/treehouse-root` overrides the root for either kind of home; pointing two homes at one path re-creates the sharing, and `bin/fm-spawn.sh` then refuses the foreign slot instead of starting a worker in another home's clone.
 
 Pools that already exist are never migrated, moved, or deleted, and returning a slot resolves its pool from the worktree path rather than from any configured root.
 A secondmate home whose root has no pool yet simply grows one from its own clone on the next spawn.
+
+A shared default root can still hold slots that a secondmate home grew from its own clones before each secondmate had a root of its own.
+The primary home can be handed such a slot; `bin/fm-spawn.sh` then returns that one slot and refuses, naming the slot and the checkout that grew it, and the same free slot may be handed back on the next spawn until it is retired.
+Retiring it is a one-time, operator-run cleanup, never done by a spawn, because the slot may still hold that other home's work.
+From the checkout the refusal names, preview exactly that slot with `treehouse destroy <slot-path>`, then rerun the same command with `--yes` to remove it.
+Treehouse's destroy is safe by default: it only removes a slot that is merged, clean, idle, and unleased, and skips any other with a reason, so do not add an `--include-*` flag unless that home's owner has confirmed its work is disposable.
 
 ## Calm preference (config/calm)
 

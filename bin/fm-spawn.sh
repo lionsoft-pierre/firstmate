@@ -3860,7 +3860,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # session too.
   if [ -n "$SPAWN_TREEHOUSE_ROOT" ]; then
     spawn_send_text_line "$WT_TARGET" \
-      "treehouse get --root '${SPAWN_TREEHOUSE_ROOT//\'/\'\\\'\'}'"
+      "treehouse get --root $(shell_quote "$SPAWN_TREEHOUSE_ROOT")"
   else
     spawn_send_text_line "$WT_TARGET" "treehouse get"
   fi
@@ -3952,6 +3952,17 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       spawn_foreign_slot_note="it could not be returned to the pool and is still held"
     fi
     echo "error: treehouse get handed task $ID the worktree '$WT', which belongs to '${spawn_wt_common:-an unresolvable repository}' rather than to the spawning project '$PROJ_ABS' (pool root ${SPAWN_TREEHOUSE_ROOT:-the Treehouse default}); $spawn_foreign_slot_note; refusing to launch a worker into another checkout's copy; inspect window $T" >&2
+    # A free foreign slot is handed back again on the next spawn from this pool,
+    # so name the checkout that grew it and the one safe command that retires
+    # exactly that slot: destroy without --yes only previews, and with --yes it
+    # still skips a slot that is dirty, unmerged, in use, or leased.
+    if [ -n "$spawn_wt_common" ]; then
+      case "$spawn_wt_common" in
+        */.git) spawn_foreign_backing=${spawn_wt_common%/.git} ;;
+        *) spawn_foreign_backing=$spawn_wt_common ;;
+      esac
+      echo "hint: the slot '$WT' was grown from the checkout '$spawn_foreign_backing', not from '$PROJ_ABS'; until it is retired this pool can keep handing it back. Preview retiring exactly that slot with: (cd $(shell_quote "$spawn_foreign_backing") && treehouse destroy $(shell_quote "$WT")) and rerun it with --yes appended to remove it; Treehouse still skips the slot if it holds unlanded work or is in use or leased (docs/configuration.md \"Worktree pool root\")" >&2
+    fi
     exit 1
   fi
 

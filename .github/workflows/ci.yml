@@ -475,6 +475,17 @@ jobs:
             exit 1
           }
 
+          # The pool root fm-spawn types into a pane must stay one quoted word
+          # under stock Bash, whose parameter-expansion quoting differs from 5.
+          root_output=$(FM_TEST_ONLY=test_spawn_types_a_quote_bearing_root_as_one_word \
+            /bin/bash tests/fm-treehouse-per-home-pool.test.sh)
+          printf '%s\n' "$root_output"
+          root_count=$(printf '%s\n' "$root_output" | grep -c '^ok - ')
+          [ "$root_count" -eq 1 ] || {
+            echo "::error::expected 1 quoted pool-root bash 3.2 regression, got $root_count"
+            exit 1
+          }
+
   invariants:
     name: Repo invariants
     runs-on: ubuntu-latest
