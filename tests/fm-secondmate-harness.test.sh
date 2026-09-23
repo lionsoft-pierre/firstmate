@@ -1117,6 +1117,11 @@ SH
   chmod +x "$fakebin/gh"
   cat > "$fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
+# Top-level help carries the global --root flag (treehouse 2.2.0+).
+if [ "${1:-}" = --help ]; then
+  printf '%s\n' 'Flags:' '      --root string   Worktree root directory'
+  exit 0
+fi
 if [ "${1:-}" = get ] && [ "${2:-}" = --help ]; then
   printf '%s\n' 'Usage: treehouse get [--lease]'
 fi
