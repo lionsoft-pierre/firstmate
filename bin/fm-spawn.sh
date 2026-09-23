@@ -1271,19 +1271,58 @@ spawn_abort_cleanup() {
 }
 trap spawn_abort_cleanup EXIT
 
-# One bounded lock per live Herdr session/socket, shared across all homes.
+# Live-holder backstop for a presentation resume. It has to outlast one whole
+# concurrent projected spawn, because that is exactly what a resume queues
+# behind; an unloaded machine holds the lock for a handful of seconds, so this
+# leaves well over an order of magnitude of headroom for a slow worktree create
+# or a slow harness launch while still ending a wedged sibling's wait.
+HERDR_PRESENTATION_RESUME_LOCK_WAIT=180
+
+# One lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
-spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+#
+# Two different critical sections share this lock, so the wait has two budgets.
+# bin/fm-teardown.sh and fm_backend_herdr_kill hold it only across a short burst
+# of Herdr API calls, and the fresh projected-create path below degrades to the
+# flat layout when it cannot have the lock, so both are served by the short
+# default budget: past it, a stall is more likely a problem than a queue.
+#
+# A spawn that WINS the lock, though, keeps it from its projection or reclaim
+# all the way through worktree creation, metadata publication, harness launch,
+# and the focus-safe send (see the release next to the launch send below), which
+# is always far longer than that short budget. A caller that cannot degrade -
+# presentation recovery - is therefore not really waiting for a burst of API
+# calls, it is waiting for a whole sibling spawn, and must say so by passing a
+# live-holder budget. While a LIVE process holds the lock, that wait is a queue
+# rather than contention, and it always terminates: the holder's own EXIT trap
+# releases the lock when it finishes, and a holder that dies leaves a stale lock
+# the next attempt reclaims. The live budget is only a backstop against a
+# sibling that wedges without dying, which is a hang worth surfacing.
+# FM_LOCK_HELD_PID (bin/fm-wake-lib.sh) names that live holder; it is published
+# here so a refusal can report what it waited on.
+HERDR_PRESENTATION_ORDER_LOCK_BLOCKER=
+spawn_herdr_presentation_order_lock_acquire() {  # <session> [live-holder wait seconds]
+  local session=${1:-} live_wait=${2:-0} attempt live_attempt live_limit lock_path holder
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
+  HERDR_PRESENTATION_ORDER_LOCK_BLOCKER=
+  live_limit=$((live_wait * 10))
   attempt=0
+  live_attempt=0
   while [ "$attempt" -lt 50 ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
+    fi
+    holder=${FM_LOCK_HELD_PID:-}
+    if [ "$live_limit" -gt 0 ] && fm_pid_alive "$holder"; then
+      HERDR_PRESENTATION_ORDER_LOCK_BLOCKER=$holder
+      [ "$live_attempt" -lt "$live_limit" ] || return 1
+      live_attempt=$((live_attempt + 1))
+      sleep 0.1
+      continue
     fi
     sleep 0.1
     attempt=$((attempt + 1))
@@ -3279,8 +3318,17 @@ else
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
           exit 1
         }
-        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
-          echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
+        spawn_herdr_presentation_order_lock_acquire \
+          "$HERDR_SES" "$HERDR_PRESENTATION_RESUME_LOCK_WAIT" || {
+          # Recovery cannot degrade to the flat layout without abandoning the
+          # exact restart binding, so it queues behind a live sibling spawn and
+          # refuses only when nothing is making progress. Name the holder: a
+          # bare "contended" reading is undiagnosable after the fact.
+          if [ -n "$HERDR_PRESENTATION_ORDER_LOCK_BLOCKER" ]; then
+            echo "error: herdr presentation recovery gave up after ${HERDR_PRESENTATION_RESUME_LOCK_WAIT}s waiting for the session lock still held by live process $HERDR_PRESENTATION_ORDER_LOCK_BLOCKER; refusing a concurrent resume" >&2
+          else
+            echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
+          fi
           exit 1
         }
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
