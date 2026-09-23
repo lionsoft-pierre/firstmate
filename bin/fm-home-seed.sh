@@ -388,12 +388,21 @@ seeded_origin_url() {
 }
 
 acquire_treehouse_home() {
-  local id=$1 home
+  local id=$1 home root
+  local -a root_args=()
+  # Lease the home from the ACQUIRING home's pool root (fm_treehouse_root owns
+  # which root that is and why), so a new secondmate home is never a slot
+  # another home's checkout grew. An empty root means Treehouse's own.
+  root=$(fm_treehouse_root "$FM_HOME") || {
+    echo "error: could not resolve this home's Treehouse pool root; config/treehouse-root must be an absolute path when set" >&2
+    return 1
+  }
+  [ -z "$root" ] || root_args=(--root "$root")
   # Durably lease a firstmate worktree from the pool. The lease persists with no
   # live process and is skipped by later get/prune, so the home survives restarts
   # until teardown or rollback returns it. treehouse prints only the worktree path
   # to stdout (banners go to stderr), so command substitution captures the path.
-  home=$(cd "$FM_ROOT" && treehouse get --lease --lease-holder "$id") || {
+  home=$(cd "$FM_ROOT" && treehouse get --lease --lease-holder "$id" ${root_args[@]+"${root_args[@]}"}) || {
     echo "error: treehouse get --lease failed to lease a firstmate home" >&2
     return 1
   }

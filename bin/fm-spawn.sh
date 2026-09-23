@@ -209,6 +209,12 @@
 #   itself a linked worktree of the project repository still launches. A pane
 #   that never reaches an isolated worktree refuses at the end of that wait,
 #   naming the last path seen and why it was rejected.
+#   A secondmate home's acquisition is pinned to its own Treehouse pool root
+#   (bin/fm-wake-lib.sh's fm_treehouse_root, config/treehouse-root), passed on
+#   the command typed into the pane rather than exported into the shared
+#   session, while a primary home keeps Treehouse's own root; a slot that
+#   still turns out to be a worktree of another checkout of the same repository
+#   is returned and refused.
 #   That placement is proven only at launch. Every ship or scout pane therefore
 #   also receives `export FM_TASK_ID=<task-id>` before the launch command, on
 #   the same channel as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
@@ -1099,6 +1105,7 @@ SPAWN_META_PUBLISH_STARTED=0
 SPAWN_FRESH_COMMIT_PENDING=0
 SPAWN_TASK_SET_LOCK=
 SPAWN_TASK_SET_LOCK_HELD=0
+SPAWN_TREEHOUSE_ROOT=
 SPAWN_TREEHOUSE_PROJECT_LOCK=
 SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
 SPAWN_SLOT_CLAIMED=0
@@ -2749,6 +2756,10 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  SPAWN_TREEHOUSE_ROOT=$(fm_treehouse_root "$FM_HOME" "$CONFIG") || {
+    echo "error: could not resolve this home's Treehouse pool root; config/treehouse-root must be an absolute path when set" >&2
+    exit 1
+  }
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -3892,7 +3903,19 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  # --root pins the acquisition to THIS home's pool (fm_treehouse_root owns
+  # which homes get one and why); an empty root means Treehouse's own, so the
+  # primary home types the same plain command it always has. It is passed on the
+  # command rather than exported into the pane's environment because every
+  # session provider creates its panes in one shared session: an environment
+  # carrying this home's root would follow every other home's spawns in that
+  # session too.
+  if [ -n "$SPAWN_TREEHOUSE_ROOT" ]; then
+    spawn_send_text_line "$WT_TARGET" \
+      "treehouse get --root $(shell_quote "$SPAWN_TREEHOUSE_ROOT")"
+  else
+    spawn_send_text_line "$WT_TARGET" "treehouse get"
+  fi
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -3952,6 +3975,48 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+
+  # Prove the slot Treehouse handed back is a worktree of the SPAWNING
+  # project's own clone, not of another checkout of the same repository.
+  #
+  # A pool slot is a linked worktree of whichever checkout grew it, and
+  # `treehouse get` hands back any free slot in the pool it resolves. The
+  # per-home root above is what keeps every reachable slot this home's own, so
+  # this can only fire when two homes are deliberately pointed at one root, or
+  # if Treehouse's allocation changes under us. Without the check a non-Claude
+  # harness would launch a worker into another home's copy and commit there,
+  # while a Claude launch would stop later at bin/fm-claude-trust.sh's structural
+  # refusal, which names a trust problem rather than the pool that caused it.
+  #
+  # The slot is returned before refusing: this spawn acquired it moments ago and
+  # publishes no record, so nothing downstream would ever release it, and the
+  # pane holding it is never reopened. Only the exact path just acquired is ever
+  # returned, so a slot another home is using cannot be reached from here.
+  spawn_wt_common=$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    spawn_wt_common=$(CDPATH='' cd -- "$spawn_wt_common" 2>/dev/null && pwd -P) || spawn_wt_common=
+  spawn_proj_common=$(git -C "$PROJ_ABS" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    spawn_proj_common=$(CDPATH='' cd -- "$spawn_proj_common" 2>/dev/null && pwd -P) || spawn_proj_common=
+  if [ -z "$spawn_wt_common" ] || [ -z "$spawn_proj_common" ] ||
+    [ "$spawn_wt_common" != "$spawn_proj_common" ]; then
+    if ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) >/dev/null 2>&1; then
+      spawn_foreign_slot_note="it has been returned to the pool"
+    else
+      spawn_foreign_slot_note="it could not be returned to the pool and is still held"
+    fi
+    echo "error: treehouse get handed task $ID the worktree '$WT', which belongs to '${spawn_wt_common:-an unresolvable repository}' rather than to the spawning project '$PROJ_ABS' (pool root ${SPAWN_TREEHOUSE_ROOT:-the Treehouse default}); $spawn_foreign_slot_note; refusing to launch a worker into another checkout's copy; inspect window $T" >&2
+    # A free foreign slot is handed back again on the next spawn from this pool,
+    # so name the checkout that grew it and the one safe command that retires
+    # exactly that slot: destroy without --yes only previews, and with --yes it
+    # still skips a slot that is dirty, unmerged, in use, or leased.
+    if [ -n "$spawn_wt_common" ]; then
+      case "$spawn_wt_common" in
+        */.git) spawn_foreign_backing=${spawn_wt_common%/.git} ;;
+        *) spawn_foreign_backing=$spawn_wt_common ;;
+      esac
+      echo "hint: the slot '$WT' was grown from the checkout '$spawn_foreign_backing', not from '$PROJ_ABS'; until it is retired this pool can keep handing it back. Preview retiring exactly that slot with: (cd $(shell_quote "$spawn_foreign_backing") && treehouse destroy $(shell_quote "$WT")) and rerun it with --yes appended to remove it; Treehouse still skips the slot if it holds unlanded work or is in use or leased (docs/configuration.md \"Worktree pool root\")" >&2
+    fi
+    exit 1
+  fi
 
   # Claim the pool slot for this task. The interactive `treehouse get` sent to
   # the pane above records only a process lease (Treehouse's durable

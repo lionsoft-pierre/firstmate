@@ -49,6 +49,7 @@ config/wedge-defer-parked-gate  optional presence flag opting this home into the
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see "Watched tool updates" below
+config/treehouse-root  optional absolute directory overriding this home's Treehouse worktree-pool root; LOCAL, gitignored, and NOT inherited by secondmate homes, which each need their own; a non-absolute value is refused rather than guessed; see "Worktree pool root" below
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
@@ -132,6 +133,24 @@ The inventory above names each file and its owner; wake, watcher, away-mode, and
 `docs/sessionstart-nudge.md` owns the native session-open adapter tiers that run or nudge the digest command, and the source routing between them.
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
+
+## Worktree pool root (config/treehouse-root)
+
+Every disposable worker copy, and every home leased for a secondmate, is a slot in a Treehouse pool, and those pools live OUTSIDE the home.
+Treehouse keys a pool by repository identity and shares every pool under one root across all the checkouts that reach it, so two homes with their own clones of one repository under a single root are handed each other's slots; `bin/fm-wake-lib.sh`'s `fm_treehouse_root` owns that reasoning and the exact derivation.
+The split is primary home versus secondmate home, identified by the `.fm-secondmate-home` marker every seeded secondmate home carries, whether it was seeded locally or on a remote host; it never depends on the parent record or on whether the parent is reachable.
+A primary home keeps Treehouse's own root, exactly as before: its spawns pass no `--root`, so its existing warm pools keep handing out their slots and every lease it holds, including the leased secondmate homes, is untouched.
+Every secondmate home, remote-seeded ones included, instead gets its own root, by default `<base>/.treehouse-homes/<home-name>-<hash>`, with the hash taken over the home's path and the secondmate id its marker records so a later secondmate leased into the same slot path never inherits an earlier home's pool, where the base is an absolute `TREEHOUSE_ROOT` when the operator set one and the home directory otherwise, so it only ever leases worktrees of its own clones and is never handed a slot of another home's.
+An absolute path in `config/treehouse-root` overrides the root for either kind of home; pointing two homes at one path re-creates the sharing, and `bin/fm-spawn.sh` then refuses the foreign slot instead of starting a worker in another home's clone.
+
+Pools that already exist are never migrated, moved, or deleted, and returning a slot resolves its pool from the worktree path rather than from any configured root.
+A secondmate home whose root has no pool yet simply grows one from its own clone on the next spawn.
+
+A shared default root can still hold slots that a secondmate home grew from its own clones before each secondmate had a root of its own.
+The primary home can be handed such a slot; `bin/fm-spawn.sh` then returns that one slot and refuses, naming the slot and the checkout that grew it, and the same free slot may be handed back on the next spawn until it is retired.
+Retiring it is a one-time, operator-run cleanup, never done by a spawn, because the slot may still hold that other home's work.
+From the checkout the refusal names, preview exactly that slot with `treehouse destroy <slot-path>`, then rerun the same command with `--yes` to remove it.
+Treehouse's destroy is safe by default: it only removes a slot that is merged, clean, idle, and unleased, and skips any other with a reason, so do not add an `--include-*` flag unless that home's owner has confirmed its work is disposable.
 
 ## Calm preference (config/calm)
 
@@ -1194,6 +1213,7 @@ FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_TASK_ID=             # internal task-worker marker fm-spawn.sh exports into ship and scout panes, never set by hand; bin/fm-test-run.sh refuses to execute in the repository primary checkout while it is set
+TREEHOUSE_ROOT=          # optional absolute base the per-home Treehouse pool roots are derived under; a relative value is ignored for that derivation; see "Worktree pool root"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline

@@ -160,13 +160,26 @@ SH
 # --- unit level: fm_backend_herdr_agent_state -------------------------------
 
 test_herdr_agent_state_preserves_husk_classifier() {
-  local pane_state expected out
+  local pane_state server_state expected out
 
-  for row in 'dead missing' 'no-agent dead' 'live alive' 'unknown unreadable'; do
+  for row in 'dead missing' 'no-agent dead' 'live alive'; do
     pane_state=${row%% *}
     expected=${row#* }
     out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
     [ "$out" = "$expected" ] || fail "Herdr pane state $pane_state should map to $expected, got '$out'"
+  done
+
+  # An unknown pane state is decided by the recorded session's own server state,
+  # so both branches are pinned here. Leaving the probe to run for real made the
+  # verdict depend on the machine: an installed Herdr answers `stopped` for this
+  # scratch session and yields missing, while a machine with no Herdr answers
+  # `unknown` and yields unreadable.
+  for row in 'stopped missing' 'running unreadable' 'unknown unreadable'; do
+    server_state=${row%% *}
+    expected=${row#* }
+    out=$(FM_TEST_SERVER_STATE="$server_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "unknown"; }; fm_backend_herdr_server_running_state() { printf "%s" "$FM_TEST_SERVER_STATE"; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
+    [ "$out" = "$expected" ] \
+      || fail "an unknown Herdr pane state on a $server_state server should map to $expected, got '$out'"
   done
 
   out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state "no-colon-target"' "$ROOT")
@@ -224,6 +237,11 @@ SH
   chmod +x "$fakebin/gh"
   cat > "$fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
+# Top-level help carries the global --root flag (treehouse 2.2.0+).
+if [ "${1:-}" = --help ]; then
+  printf '%s\n' 'Flags:' '      --root string   Worktree root directory'
+  exit 0
+fi
 if [ "${1:-}" = get ] && [ "${2:-}" = --help ]; then
   printf '%s\n' 'Usage: treehouse get [--lease]'
 fi

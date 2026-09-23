@@ -1202,6 +1202,96 @@ fm_firstmate_root_home() {
   printf '%s\n' "$home"
 }
 
+# The Treehouse pool root this home leases its worktrees from.
+#
+# Treehouse keys a pool by repository identity, and every checkout that reaches
+# one root shares that root's pools. A pool slot is a linked worktree of
+# whichever checkout grew it, and `treehouse get` hands back any FREE slot, so
+# two firstmate homes holding their own clones of one repository under a single
+# root take turns being handed each other's slots. The failure is intermittent -
+# a pool with no free slot grows one from the asking checkout and the spawn
+# works - so the same command succeeds or refuses depending only on who else is
+# holding slots at that moment.
+#
+# The split is primary home versus secondmate home, decided by the home's own
+# identity: the .fm-secondmate-home marker every seeded secondmate home carries,
+# local or remote-seeded alike (bin/fm-backend-hometag-lib.sh classifies home
+# kind from the same marker). It never depends on .fm-secondmate-parent, so a
+# remote-seeded home whose parent lives on another machine is still classed as
+# the secondmate home it is. The marker is judged as a file: it must be a
+# regular file carrying a secondmate id, and a symlink, an empty marker, or any
+# other kind of entry at that path is refused rather than guessed at.
+#
+# A primary home (no marker) keeps Treehouse's own root, exactly as before: this
+# echoes nothing for it and callers then pass no --root at all, so Treehouse
+# resolves its default, TREEHOUSE_ROOT, and its config the way it always has.
+# The primary home's existing warm pools keep handing out their slots, and every
+# lease it already holds - including the leased secondmate homes it later
+# returns - is untouched. Every secondmate home gets a root of its own instead,
+# so every slot it can reach was grown from its own clones and it can never be
+# handed a slot of the primary home's or of another secondmate home's.
+#
+# The derived root is keyed by the home's physical path AND the secondmate id
+# its marker records. A secondmate home is itself a leased slot, and slot paths
+# are reused, so a path alone would hand a later secondmate leased into the same
+# slot the earlier home's pool, whose slots are worktrees of clones that home no
+# longer has.
+#
+# That derived root is placed beside the home rather than inside it. A
+# secondmate home is itself a leased worktree of firstmate, so a pool nested in
+# it would put project worktrees, firstmate's own included, inside the working
+# tree firstmate operates from. It sits under TREEHOUSE_ROOT when the
+# environment sets it to an absolute path, and under the home directory
+# otherwise. Only that environment variable is followed: a root set in
+# Treehouse's own config file or in a repo's treehouse.toml is overridden by the
+# --root this value feeds, so config/treehouse-root is the way to place a
+# secondmate home's pools anywhere else.
+#
+# config/treehouse-root overrides either kind of home with an absolute
+# directory. Pointing two homes at one root re-creates the sharing described
+# above; bin/fm-spawn.sh refuses the resulting foreign slot rather than
+# launching a worker into another home's clone.
+#
+# Echoes the value to pass to `treehouse --root`, or nothing when no --root is
+# to be passed. Treehouse places the pools themselves in a `.treehouse`
+# directory beneath it, so the pool layout every other helper here relies on
+# (<pool>/<slot>/<repo> beside treehouse-state.json) is unchanged.
+fm_treehouse_root() {  # [home] [config-dir]
+  local home=${1:-${FM_HOME:-}} config=${2:-} configured marker base id hash
+  [ -n "$home" ] || return 1
+  home=$(CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || return 1
+  [ -n "$config" ] || config=${FM_CONFIG_OVERRIDE:-$home/config}
+  if [ -f "$config/treehouse-root" ] && [ ! -L "$config/treehouse-root" ]; then
+    configured=
+    IFS= read -r configured < "$config/treehouse-root" 2>/dev/null || true
+    configured=${configured#"${configured%%[![:space:]]*}"}
+    configured=${configured%"${configured##*[![:space:]]}"}
+    if [ -n "$configured" ]; then
+      case "$configured" in
+        /*) printf '%s\n' "$configured"; return 0 ;;
+        *) return 1 ;;
+      esac
+    fi
+  fi
+  marker="$home/.fm-secondmate-home"
+  if [ -L "$marker" ]; then
+    return 1
+  elif [ ! -e "$marker" ]; then
+    return 0
+  fi
+  [ -f "$marker" ] || return 1
+  id=$(tr -d '[:space:]' < "$marker" 2>/dev/null) || return 1
+  [ -n "$id" ] || return 1
+  # A relative TREEHOUSE_ROOT means "a pool inside the repo" to Treehouse, which
+  # is the one thing this root must never be, so only an absolute value is
+  # honored as the base.
+  base=${TREEHOUSE_ROOT:-}
+  case "$base" in /*) ;; *) base=${HOME:-} ;; esac
+  [ -n "$base" ] || return 1
+  hash=$(printf '%s\n%s' "$home" "$id" | git hash-object --stdin 2>/dev/null) || return 1
+  printf '%s/.treehouse-homes/%s-%s\n' "$base" "$(basename "$home")" "${hash:0:6}"
+}
+
 # The one lock serializing Treehouse slot allocation and return for a project.
 #
 # It is anchored in the local root home's state directory so that every home on

@@ -518,6 +518,7 @@ mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" \
 mkdir -p "$HOME_DIR/data/active-seeded" "$HOME_DIR/data/abort-a" "$HOME_DIR/data/abort-b" \
   "$HOME_DIR/data/lock-contended" "$HOME_DIR/data/default-on"
 touch "$HOME_DIR/state/.last-watcher-beat"
+printf '%s\n' "$TMP_ROOT/pool/home" > "$HOME_DIR/config/treehouse-root"
 # Presentation spaces are on by default, so the flat baseline below opts out
 # explicitly; the projected cases each restate the setting they exercise.
 printf 'off\n' > "$HOME_DIR/config/herdr-presentation-spaces"
@@ -977,6 +978,8 @@ mkdir -p "$SECOND_HOME_A/state" "$SECOND_HOME_A/config" "$SECOND_HOME_A/data" \
 printf 'alpha\n' > "$SECOND_HOME_A/.fm-secondmate-home"
 printf 'bravo\n' > "$SECOND_HOME_B/.fm-secondmate-home"
 touch "$SECOND_HOME_A/state/.last-watcher-beat" "$SECOND_HOME_B/state/.last-watcher-beat"
+printf '%s\n' "$TMP_ROOT/pool/alpha" > "$SECOND_HOME_A/config/treehouse-root"
+printf '%s\n' "$TMP_ROOT/pool/bravo" > "$SECOND_HOME_B/config/treehouse-root"
 # Ensure the secondmate homes look like gitignored firstmate homes so inheritance
 # may write config/herdr-presentation-spaces.
 git -C "$SECOND_HOME_A" init -q

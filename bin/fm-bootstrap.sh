@@ -54,7 +54,8 @@
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
 #          treehouse is also MISSING when its installed version lacks
-#          "treehouse get --lease" support.
+#          "treehouse get --lease" support, or lacks the "--root" flag that pins
+#          a spawn to its own home's pool (treehouse 2.2.0 and later).
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.46.0 (structured pipeline attestation floor; see CONTRIBUTING.md).
 #          The AXI-family floor policy is owned beside GH_AXI_MIN and
@@ -929,6 +930,17 @@ treehouse_supports_lease() {
   treehouse get --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--lease([^[:alnum:]_-]|$)'
 }
 
+# A spawn pins its worktree acquisition to the spawning home's own pool root, so
+# that two homes holding their own clones of one repository are never handed each
+# other's slots (bin/fm-wake-lib.sh's fm_treehouse_root). Treehouse grew `--root`
+# in 2.2.0; before that there is no per-invocation root at all - no flag, and
+# TREEHOUSE_ROOT is ignored - so an older treehouse silently shares one pool
+# across every home instead of failing. Probe the flag rather than the version
+# string, matching the lease probe above.
+treehouse_supports_root() {
+  treehouse --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--root([^[:alnum:]_-]|$)'
+}
+
 # Shared semantic-version floor for the tool gates below. A version string that
 # cannot be parsed into exactly one major.minor.patch triple is incompatible,
 # never assumed current, so a development or vendored build cannot pass a floor
@@ -1473,7 +1485,8 @@ detect_local_tools() {
   # backend actually requires treehouse (every backend except orca, which owns its
   # own worktrees); an orca home must not be told to upgrade a provider it never uses.
   if fm_backend_list_contains "$TOOLS" treehouse \
-    && command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
+    && command -v treehouse >/dev/null 2>&1 \
+    && { ! treehouse_supports_lease || ! treehouse_supports_root; }; then
     echo "MISSING: treehouse (install: $(install_cmd treehouse))"
   fi
   if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then

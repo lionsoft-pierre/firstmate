@@ -73,6 +73,17 @@ if [ "${1:-}" = get ] && [ "${2:-}" = --help ]; then
   fi
   exit 0
 fi
+if [ "${1:-}" = --help ]; then
+  # Top-level help carries the global --root flag from treehouse 2.2.0 on.
+  # Default to advertising it so cases that pin other tools stay unaffected;
+  # FM_FAKE_TREEHOUSE_NO_ROOT_HELP=1 models an older treehouse.
+  if [ "${FM_FAKE_TREEHOUSE_NO_ROOT_HELP:-}" = 1 ]; then
+    printf '%s\n' 'Flags:' '  -h, --help   help for treehouse'
+  else
+    printf '%s\n' 'Flags:' '  -h, --help          help for treehouse' '      --root string   Worktree root directory'
+  fi
+  exit 0
+fi
 exit 0
 SH
   chmod +x "$fakebin/treehouse"
@@ -694,6 +705,48 @@ ROWS
   pass "bootstrap: JSON-emitting backends require jq (their genuine dep), never tmux"
 }
 
+# A treehouse without the global --root flag cannot pin a spawn to its own home's
+# pool, so every home silently shares one pool and hands out each other's
+# worktrees (bin/fm-wake-lib.sh's fm_treehouse_root). It must be reported for the
+# backends that use treehouse, and stay silent for the one that does not.
+test_treehouse_root_check_follows_resolved_backend() {
+  local case_dir fakebin out
+
+  # Orca owns its own worktrees, so a root-less treehouse is not its problem.
+  case_dir="$TMP_ROOT/orca-rootless-treehouse"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' orca > "$case_dir/home/config/backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" orca
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_TREEHOUSE_NO_ROOT_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "backend=orca must not require treehouse --root support, got: $out"
+
+  # A session-provider backend leases from a pool, so the same treehouse is stale.
+  case_dir="$TMP_ROOT/herdr-rootless-treehouse"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' herdr > "$case_dir/home/config/backend"
+  fakebin=$(make_fake_toolchain_no_tmux "$case_dir" herdr)
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_TREEHOUSE_NO_ROOT_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "MISSING: treehouse" \
+    "backend=herdr must require a treehouse that supports --root"
+
+  # The same home with a --root-capable treehouse is silent, so the case above is
+  # the flag and not some other missing tool.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+  assert_not_contains "$out" "MISSING: treehouse" \
+    "a treehouse advertising --root must not be reported as stale"
+  pass "bootstrap: the treehouse --root check follows the resolved backend's worktree provider"
+}
+
 test_treehouse_lease_check_follows_resolved_backend() {
   local case_dir fakebin out
   # A treehouse that lacks durable --lease support is only a problem for a backend
@@ -1248,6 +1301,7 @@ test_cmux_bundled_cli_satisfies_dependency
 test_unknown_backend_reports_invalid_configuration
 test_json_backends_require_jq_not_tmux
 test_treehouse_lease_check_follows_resolved_backend
+test_treehouse_root_check_follows_resolved_backend
 test_fleet_sync_timeout_scales_with_origin_backed_project_count
 test_fleet_sync_timeout_floor_preserves_small_fleets
 test_fleet_sync_timeout_explicit_override_wins
