@@ -113,7 +113,7 @@ Treehouse is the worktree provider for every session-provider backend (tmux, her
 Two facts about pool allocation are load-bearing for the per-home pool root, and both are version-scoped to the treehouse CLI.
 
 A pool is keyed by repository identity and shared by every checkout that reaches its root, so under one root a home is handed a free slot that is a linked worktree of ANOTHER home's clone, and under its own root it is not.
-Verified on 2026-09-22 with treehouse v2.2.0 on Darwin 27.0.0, through the portable regression, which builds two homes with identically named clones of one origin and drives the real binary:
+Verified on 2026-09-23 with treehouse v2.2.0 on Darwin 27.0.0, through the portable regression, which builds two homes with identically named clones of one origin and drives the real binary:
 
 ```sh
 bin/fm-test-run.sh tests/fm-treehouse-per-home-pool.test.sh
@@ -122,13 +122,20 @@ bin/fm-test-run.sh tests/fm-treehouse-per-home-pool.test.sh
 Observed output:
 
 ```text
-ok - each home resolves its own absolute pool root, stable across calls and outside the home
-ok - config/treehouse-root overrides the derived root and refuses a non-absolute value
-ok - fm-spawn types this home's pool root into the pane that runs the acquisition
+ok - the root home resolves no per-home root, so Treehouse's own root stays in effect
+ok - each secondmate home resolves its own absolute pool root, stable across calls and outside the home
+ok - config/treehouse-root overrides either home kind's root and refuses a non-absolute value
+ok - a remote-seeded secondmate home resolves its own pool root, distinct from the primary home's and every other home's
+ok - a symlinked .fm-secondmate-home marker is refused rather than used to classify the home
+ok - two secondmate homes at the same path with different ids resolve different roots, each stable across calls
+ok - a .fm-secondmate-home marker with no id is refused rather than keyed by path alone
+ok - fm-spawn types a secondmate home's own pool root into the pane that runs the acquisition
+ok - fm-spawn types a pool root carrying a single quote, a space, or both as one correctly quoted word
+ok - fm-spawn types the plain acquisition for the root home, leaving Treehouse's own root in effect
 ok - fm-spawn refuses a pool slot backed by another home's clone instead of launching into it
 ok - real treehouse: one shared root hands home B a worktree of home A's clone
 ok - real treehouse: the acquisition fm-spawn types lands in this home's own clone
-FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=7129
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=43641
 ```
 
 `treehouse return <absolute-worktree-path>` resolves that worktree's pool from the path itself and ignores the configured root entirely, which is why moving a home to its own root strands no existing lease and needs no migration.
