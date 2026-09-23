@@ -1297,8 +1297,10 @@ HERDR_PRESENTATION_RESUME_LOCK_WAIT=180
 # live-holder budget. While a LIVE process holds the lock, that wait is a queue
 # rather than contention, and it always terminates: the holder's own EXIT trap
 # releases the lock when it finishes, and a holder that dies leaves a stale lock
-# the next attempt reclaims. The live budget is only a backstop against a
-# sibling that wedges without dying, which is a hang worth surfacing.
+# the next attempt reclaims. The live budget restarts whenever a different live
+# process holds the lock, so it bounds one holder's hold rather than the whole
+# queue; it is only a backstop against a sibling that wedges without dying,
+# which is a hang worth surfacing.
 # FM_LOCK_HELD_PID (bin/fm-wake-lib.sh) names that live holder; it is published
 # here so a refusal can report what it waited on.
 HERDR_PRESENTATION_ORDER_LOCK_BLOCKER=
@@ -1318,12 +1320,14 @@ spawn_herdr_presentation_order_lock_acquire() {  # <session> [live-holder wait s
     fi
     holder=${FM_LOCK_HELD_PID:-}
     if [ "$live_limit" -gt 0 ] && fm_pid_alive "$holder"; then
+      [ "$holder" = "$HERDR_PRESENTATION_ORDER_LOCK_BLOCKER" ] || live_attempt=0
       HERDR_PRESENTATION_ORDER_LOCK_BLOCKER=$holder
       [ "$live_attempt" -lt "$live_limit" ] || return 1
       live_attempt=$((live_attempt + 1))
       sleep 0.1
       continue
     fi
+    HERDR_PRESENTATION_ORDER_LOCK_BLOCKER=
     sleep 0.1
     attempt=$((attempt + 1))
   done
