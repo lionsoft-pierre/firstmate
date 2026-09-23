@@ -1,0 +1,39 @@
++ git init -q -b main $W/src
++ echo base
++ git -C $W/src add .
++ git -C $W/src -c 'user.name=t' -c 'user.email=t@x' commit -qm init
++ git clone -q --bare $W/src $W/origin.git
++ h=main
++ mkdir -p $W/main/projects
++ git clone -q file://$W/origin.git $W/main/projects/studio2
++ h=studio
++ mkdir -p $W/studio/projects
++ git clone -q file://$W/origin.git $W/studio/projects/studio2
++ echo studio
++ SHARED=$W/shared-root 
++ A=+(eval):10> cd $W/main/projects/studio2
++ treehouse get --lease --lease-holder main --root $W/shared-root
++ A=$W/shared-root/.treehouse/studio2-721d4c/1/studio2 
++ cat $W/shared-root/.treehouse/studio2-721d4c/1/studio2/.git
+gitdir: $W/main/projects/studio2/.git/worktrees/studio2
++ B=+(eval):13> cd $W/studio/projects/studio2
++ treehouse get --lease --lease-holder studio --root $W/shared-root
++ B=$W/shared-root/.treehouse/studio2-721d4c/1/studio2 
++ cat $W/shared-root/.treehouse/studio2-721d4c/1/studio2/.git
+gitdir: $W/main/projects/studio2/.git/worktrees/studio2
++ ROOT_MAIN=+(eval):16> HOME=$W/userhome bash -c '. "$1"; fm_treehouse_root "$2"' _ /Users/pierre/.no-mistakes/worktrees/bfbab1c21177/01M35FAAWRM0N3B66V8V38E983/bin/fm-wake-lib.sh $W/main
++ ROOT_MAIN='' 
++ echo 'main root='\'\'' (empty = Treehouse default)'
+main root='' (empty = Treehouse default)
++ ROOT_STUDIO=+(eval):17> HOME=$W/userhome bash -c '. "$1"; fm_treehouse_root "$2"' _ /Users/pierre/.no-mistakes/worktrees/bfbab1c21177/01M35FAAWRM0N3B66V8V38E983/bin/fm-wake-lib.sh $W/studio
++ ROOT_STUDIO=$W/userhome/.treehouse-homes/studio-e41b8b 
++ echo 'studio root=$W/userhome/.treehouse-homes/studio-e41b8b'
+studio root=$W/userhome/.treehouse-homes/studio-e41b8b
++ C=+(eval):18> cd $W/studio/projects/studio2
++ treehouse get --lease --lease-holder studio --root $W/userhome/.treehouse-homes/studio-e41b8b
++ C=$W/userhome/.treehouse-homes/studio-e41b8b/.treehouse/studio2-721d4c/1/studio2 
++ echo $W/userhome/.treehouse-homes/studio-e41b8b/.treehouse/studio2-721d4c/1/studio2
+$W/userhome/.treehouse-homes/studio-e41b8b/.treehouse/studio2-721d4c/1/studio2
++ cat $W/userhome/.treehouse-homes/studio-e41b8b/.treehouse/studio2-721d4c/1/studio2/.git
+gitdir: $W/studio/projects/studio2/.git/worktrees/studio2
++ set +x
